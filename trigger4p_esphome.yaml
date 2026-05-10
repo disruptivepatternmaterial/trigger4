@@ -8,7 +8,7 @@
 #   switch.driver_blink          (SW2 blink mode)
 #   switch.both_lights           (master — derived state, cascades to children)
 #   switch.both_blink            (master — derived state, cascades to children)
-#   number.dim_level             (0..255 — global on this firmware)
+#   number.dim_level             (0..255 — global dim, opcode 0x2D)
 #   light.trigger_status_led     (onboard NanoC6 RGB LED — BLE link status)
 #   binary_sensor.trigger_test_button  (onboard GPIO9 button)
 #
@@ -16,12 +16,23 @@
 #   Service       : 0xFFF0
 #   Write char    : 0xFFF6  (Write Without Response only — 0x52)
 #   Action frame  : 74 88 <id> 21 <action> DE <pwd_hi> <pwd_lo>   (8 bytes)
-#   Dim frame     : 74 88 <id> 2D <level>  00 <pwd_hi> <pwd_lo>   (8 bytes)
-#   Keepalive     : 74 88 <id> 00 00 00 DE <pwd_hi> <pwd_lo>      (9 bytes,
+#   Dim frame     : 74 88 <id> 2D <inv>    00 <pwd_hi> <pwd_lo>   (8 bytes)
+#                   inv = 0xFF - slider  (matches official app: low wire byte
+#                   = bright, high wire byte = dim).  Despite the APK exposing
+#                   per-channel dim opcodes 0x2B/2C/2D/2E in the 4-PLUS source,
+#                   on-the-wire testing showed only 0x2D produces a visible
+#                   change on this firmware — dim is a single shared register.
+#                   Side effect: dimming with one channel ON works cleanly,
+#                   but dimming with both channels ON makes the un-targeted
+#                   channel flicker as the shared PWM duty changes.  Known
+#                   box quirk; nothing the firmware can fix.
+#   Keepalive     : 74 88 <id> 00 00 DE <pwd_hi> <pwd_lo>         (8 bytes,
 #                   every 200 ms — REQUIRED to keep the session alive)
-#   Action codes  :
-#     SW1 (passenger): EE on, EF off, F0 blink, F1 steady
-#     SW2 (driver)   : F2 on, F3 off, F4 blink, F5 steady
+#   Action codes  (verified against official APK fourbottonctl):
+#     ch1            : EA on, EB off, EC blink, ED steady
+#     ch2 (passenger): EE on, EF off, F0 blink, F1 steady
+#     ch3 (driver)   : F2 on, F3 off, F4 blink, F5 steady
+#     ch4            : F6 on, F7 off, F8 blink, F9 steady
 #
 # Design notes:
 #   - Mirrors test_trigger_from_mac.py exactly: write 8 bytes, 300 ms gap,
@@ -129,6 +140,21 @@ ble_client:
           id: trigger_link_up
           value: "false"
 
+# Subscribe to FFF7 notifications.  The box's state stream MUST be drained
+# (the official phone app reads it every ~250ms); without this the box
+# throttles writes and dimming with both channels on causes the un-targeted
+# channel to flicker.  No state parsing — we only need the subscription.
+sensor:
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: trigger_client
+    name: "TRIGGER Notify"
+    service_uuid: "FFF0"
+    characteristic_uuid: "FFF7"
+    notify: true
+    internal: true
+    lambda: 'return x.empty() ? NAN : (float) x[0];'
+
 globals:
   - id: trigger_link_up
     type: bool
@@ -172,7 +198,11 @@ script:
                     (uint8_t)  (id(trigger_password)       & 0xFF)
                   };
 
+  # Single global dim register. wire byte is inverted (0xFF - slider) so the
+  # slider feels right in HA: 255 = brightest, 0 = off.
   - id: send_dim
+    mode: queued
+    max_runs: 16
     parameters:
       level: int
     then:
@@ -189,7 +219,7 @@ script:
                     0x74, 0x88,
                     (uint8_t) ${trigger_device_id},
                     0x2D,
-                    (uint8_t) (level & 0xFF),
+                    (uint8_t) (0xFF - (level & 0xFF)),
                     0x00,
                     (uint8_t) ((id(trigger_password) >> 8) & 0xFF),
                     (uint8_t)  (id(trigger_password)       & 0xFF)
@@ -207,10 +237,13 @@ interval:
                 service_uuid: "FFF0"
                 characteristic_uuid: "FFF6"
                 value: !lambda |-
+                  // 8-byte keepalive — matches official phone app exactly.
+                  // (Earlier 9-byte version desynced the box parser and made
+                  // dim packets land on adjacent channels' strobe action byte.)
                   return std::vector<uint8_t>{
                     0x74, 0x88,
                     (uint8_t) ${trigger_device_id},
-                    0x00, 0x00, 0x00,
+                    0x00, 0x00,
                     0xDE,
                     (uint8_t) ((id(trigger_password) >> 8) & 0xFF),
                     (uint8_t)  (id(trigger_password)       & 0xFF)
@@ -294,16 +327,17 @@ switch:
       - delay: ${inter_action_ms}
       - switch.turn_off: driver_blink
 
-# Dim is a single global register on this firmware. on_value fires send_dim
-# whenever HA / web UI moves the slider.
+# Single global dim slider. Per-channel opcodes 0x2B/2C/2E exist in the
+# official APK source but on real hardware only 0x2D produces a visible
+# change — the box has one shared dim register.
 number:
   - platform: template
     name: "Dim Level"
     id: dim_level
     optimistic: true
-    min_value: 0
+    min_value: 51
     max_value: 255
-    step: 1
+    step: 51
     initial_value: 255
     mode: slider
     on_value:
@@ -322,8 +356,9 @@ light:
     default_transition_length: 100ms
 
 # Onboard GPIO9 button:
-#   short press (50–800 ms)  → toggle both_lights (sets dim to 255 first)
-#   long  press (1000–5000)  → toggle both_blink
+#   single click  → toggle both_lights on/off (resets dim to full on power-on)
+#   double click  → toggle both_blink
+#   hold (≥1 s)   → cycle dim level 51 → 102 → 153 → 204 → 255 → 51
 binary_sensor:
   - platform: gpio
     pin:
@@ -332,9 +367,17 @@ binary_sensor:
       inverted: true
     name: "TRIGGER Test Button"
     id: trigger_test_button
-    on_click:
-      - min_length: 50ms
-        max_length: 800ms
+    on_multi_click:
+      - timing:
+          - ON for at most 350ms
+          - OFF for at most 350ms
+          - ON for at most 350ms
+          - OFF for at least 250ms
+        then:
+          - switch.toggle: both_blink
+      - timing:
+          - ON for 50ms to 800ms
+          - OFF for at least 250ms
         then:
           - if:
               condition:
@@ -344,7 +387,13 @@ binary_sensor:
               else:
                 - number.set: { id: dim_level, value: 255 }
                 - switch.turn_on: both_lights
-      - min_length: 1000ms
-        max_length: 5000ms
+      - timing:
+          - ON for at least 1000ms
         then:
-          - switch.toggle: both_blink
+          - lambda: |-
+              int cur = (int) id(dim_level).state;
+              int next = cur + 51;
+              if (next > 255) next = 51;
+              auto call = id(dim_level).make_call();
+              call.set_value(next);
+              call.perform();
