@@ -1,0 +1,31 @@
+# --- whitelist .gitignore --------------------------------------------------
+# Public sharing only: the repo intentionally publishes the README, ESPHome
+# YAML, secrets template, Python tester, LICENSE, and itself. Everything else
+# (notes, captures, secrets, decompiled APK, custom-component scratch, etc.)
+# stays local.
+
+# Ignore everything by default. NOTE: no `!*/` here, so only files at the
+# repo root that are explicitly re-allowed below get committed. Subdirs
+# (custom_components/, docs/, .esphome/, .cursor/, etc.) stay out entirely.
+*
+
+# Then re-allow only the files we actually want public.
+!.gitignore
+!LICENSE
+!README.md
+!secrets.example.yaml
+!trigger4p_esphome.yaml
+!test_trigger_from_mac.py
+
+# Belt-and-braces: never commit real secrets even if the rule above changes.
+secrets.yaml
+
+# Belt-and-braces: never commit captures or the decompiled APK.
+*.pcap
+*.pcapng
+*.btsnoop
+*.apk
+TRIGGER ACS Plus_*_APKPure/
+.esphome/
+.cursor/
+__pycache__/
