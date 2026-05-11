@@ -9,10 +9,11 @@ Reverse-engineered Bluetooth Low Energy protocol for the **TRIGGER ACS Plus**
   (M5Stack NanoC6, but any ESP32-C6 board works) into a permanent BLE bridge
   exposing the relay to Home Assistant as plain switches and a dim slider.
 
-The protocol below was captured with an nRF52840 sniffer + `nRF Sniffer for
-Bluetooth LE`, replayed from a Mac with `bleak`/CoreBluetooth, and physically
-observed driving real lights. Every byte and timing in this document has been
-verified on the wire.
+The protocol write-up below combines Wireshark captures (`nRF52840` +
+`nRF Sniffer for Bluetooth LE`), replay from macOS with `bleak`,
+decompiled Android APK tables for the four-channel opcode matrix, and weeks of
+physical testing on real bumper LEDs—see inline notes where behavior differs
+between APK hints and on-unit results (especially dimming).
 
 > **No affiliation with the manufacturer.** Use at your own risk; if you brick
 > your unit don't blame me.
@@ -52,7 +53,7 @@ certainly that. The script:
 3. starts a 200 ms keepalive loop in the background,
 4. writes the requested 8-byte command to characteristic `0xFFF6` with no
    response (opcode `0x52`),
-5. prints the 5-byte status notification that comes back on `0xFFF7`,
+5. enables notify on `0xFFF7` and prints each 5-byte status frame,
 6. holds the connection a few seconds, disconnects.
 
 Use it as the **source of truth** when something downstream (ESPHome, HA, an
@@ -64,11 +65,11 @@ Available commands:
 ```text
 sw1_on  sw1_off  sw1_blink_on  sw1_blink_off
 sw2_on  sw2_off  sw2_blink_on  sw2_blink_off
-sw3_on  sw3_off  sw3_blink_on  sw3_blink_off    # SW3/SW4 inferred, not
-sw4_on  sw4_off  sw4_blink_on  sw4_blink_off    # physically verified
+sw3_on  sw3_off  sw3_blink_on  sw3_blink_off    # APK Ch4 (F6–F9)
+sw4_on  sw4_off  sw4_blink_on  sw4_blink_off    # APK Ch1 (EA–ED); naming quirk — see action table
 both_on  both_off  both_blink_on  both_blink_off
-dim <level>          # 0..255, e.g. `dim 0x80`
-raw  <hexbytes>      # arbitrary 8/9-byte frame, e.g. `raw 7488442100DE0000`
+dim <level>          # UI brightness 0..255 (script sends wire byte 0xFF−level)
+raw  <hexbytes>      # arbitrary **8-byte** frame, e.g. `raw 748844210EEDE2425`
 ```
 
 ### Option B — ESPHome ESP32-C6 BLE bridge (Home Assistant)
@@ -94,9 +95,10 @@ What you get in HA:
 | `switch.driver_blink`    | SW2 blink mode (`0xF4`/`0xF5`) |
 | `switch.both_lights`     | Master — state derives from both children, turn-on/off cascades to children with 300 ms inter-write spacing |
 | `switch.both_blink`      | Master for blink — same pattern |
-| `number.dim_level`       | 0..255 slider, fires `0x2D <level>` (firmware applies dim globally to currently-on channels) |
+| `number.dim_level`       | **51–255** in steps of **51** (five discrete levels). Writes opcode `0x2D` with wire byte **`0xFF − slider`** (matches the official app). Dim is a **single shared register** on tested firmware — only `0x2D` produced a visible change; APK hints at `0x2B`/`0x2C`/`0x2E` per-channel opcodes, but they were **no-ops** on the unit used to validate this repo. |
+| `sensor` (internal) | **`TRIGGER Notify`** — `ble_client` characteristic on `FFF7` with `notify: true`. Keeps the notification stream flowing so the box does not throttle writes (**required**; see note at end of this README). |
 | `light.trigger_status_led` | Onboard NanoC6 RGB LED — orange on boot, red when BLE link is down, green when linked |
-| `binary_sensor.trigger_test_button` | Onboard GPIO9 button — short press toggles `both_lights` at full brightness, long press (1–5 s) toggles `both_blink` |
+| `binary_sensor.trigger_test_button` | Onboard GPIO9 — **single click** toggles `both_lights` (sets dim to **255** when turning on); **double click** toggles `both_blink`; **hold ≥ ~1 s** cycles dim **51 → 102 → … → 255 → 51** |
 
 ---
 
@@ -104,12 +106,12 @@ What you get in HA:
 
 - **Service:** `0xFFF0`
 - **Write characteristic:** `0xFFF6`, handle `0x0035`, **Write Without Response only** (opcode `0x52`). The box rejects `0x12` (Write Request) with ATT error `0x03 "Write Not Permitted"` — that's the original "ESPHome says success but the relay never moves" trap.
-- **Notify characteristic:** `0xFFF7`, handle `0x0038` — 5-byte status frame after every write; byte 3 is the relay-state bitmap.
+- **Notify characteristic:** `0xFFF7`, handle `0x0038` — short (typically **5-byte**) status frames; **your Central should subscribe** (official app does ~every 250 ms worth of traffic).
 - **Action frame (8 bytes):** `74 88 <id> 21 <action> DE <pwd_hi> <pwd_lo>`
-- **Dim frame (8 bytes):** `74 88 <id> 2D <level>  00 <pwd_hi> <pwd_lo>`
-- **Keepalive (9 bytes, every 200 ms — REQUIRED):** `74 88 <id> 00 00 00 DE <pwd_hi> <pwd_lo>`
-- **Action codes (verified):** SW1 `EE/EF/F0/F1`, SW2 `F2/F3/F4/F5`. SW3/SW4 inferred as `F6/F7/F8/F9` and `FA/FB/FC/FD`.
-- **No "send each command twice."** Earlier reverse-engineering attempts claimed the app double-fires; the captured app traffic does not. The thing it does every 200 ms is the keepalive, not a retry.
+- **Dim frame (8 bytes):** `74 88 <id> 2D <inv> 00 <pwd_hi> <pwd_lo>` where **`inv = 0xFF − UI_level`** and UI_level is what humans mean by brightness (**255 = brightest** ⇒ wire byte `0x00`; lower UI values ⇒ larger wire bytes ⇒ dimmer).
+- **Keepalive (8 bytes, every ~200 ms — REQUIRED):** `74 88 <id> 00 00 DE <pwd_hi> <pwd_lo>` — **matches captured official-app traffic.** An older 9-byte variant (`… 00 00 00 DE …`) **desynchronized** the parser on real hardware and caused dim writes to corrupt unrelated channel state (strobe/hunt).
+- **Action codes (APK `fourbottonctl` + wire check):** four contiguous blocks — **ch1** `EA–ED`, **ch2** `EE–F1`, **ch3** `F2–F5`, **ch4** `F6–F9` (ON, OFF, BLINK, STEADY each). The bundled ESPHome example maps **passenger → ch2**, **driver → ch3**.
+- **No "send each command twice" in captures.** The periodic traffic every ~200 ms is the **keepalive**, not command retries.
 
 Full byte-level reference is in the rest of this document.
 
@@ -124,7 +126,7 @@ Full byte-level reference is in the rest of this document.
 | Advertising name | `Trigger 4 Plus` |
 | Advertising address | Public BLE address with a Texas Instruments OUI (varies per unit) |
 | Advertised service | `0xFFF0` |
-| MTU (server) | 23 — fits the 8/9-byte command frames natively |
+| MTU (server) | 23 — fits the **8-byte** command frames natively |
 | Pairing/bonding | none — open characteristic, no encryption |
 
 The peripheral only advertises while no Central is connected. If the phone
@@ -157,14 +159,13 @@ uses opcode **`0x52` (Write Command, no response)**. In code:
 
 ### Command frame formats
 
-All commands are written to `0xFFF6` (handle `0x0035`).
-
-There are two frame lengths:
+All commands are written to `0xFFF6` (handle `0x0035`). On captured **Trigger
+4 Plus** traffic with the stock app, **every payload is 8 bytes**.
 
 #### 8-byte action frame (discrete commands)
 
 ```
-74 88 <device_id> <opcode> <action> <flag> <pwd_hi> <pwd_lo>
+74 88 <device_id> <opcode> <payload_b4> <flag> <pwd_hi> <pwd_lo>
 ```
 
 | Byte | Value | Meaning |
@@ -172,9 +173,9 @@ There are two frame lengths:
 | 0 | `0x74` | fixed magic |
 | 1 | `0x88` | fixed magic |
 | 2 | device ID | the unit's "fourid" (any 0–255). Default observed: `0x44` |
-| 3 | opcode | `0x21` = switch action; `0x2D` = dim; `0x2B` = dim slider hint |
-| 4 | action | see action-code table below (or dim level for `0x2D`) |
-| 5 | flag | `0xDE` for opcode `0x21`; `0x00` for opcodes `0x2D`/`0x2B` |
+| 3 | opcode | `0x21` = switch action; `0x2D` = dim; `0x2B` = dim-slider hint (see below) |
+| 4 | payload | action byte for `0x21`; **inverted dim** `0xFF − UI` for `0x2D` |
+| 5 | flag | `0xDE` for opcode `0x21` and **keepalive**; `0x00` for `0x2D` / `0x2B` |
 | 6 | `(password >> 8) & 0xFF` | high byte of PIN |
 | 7 | `password & 0xFF` | low byte of PIN |
 
@@ -182,37 +183,46 @@ The PIN is the value you typed into the TRIGGER app's "Password" field,
 treated as a single 16-bit decimal integer. Example: PIN `1234` → bytes
 `0x04 0xD2`.
 
-#### 9-byte keepalive frame (REQUIRED)
+#### 8-byte keepalive frame (REQUIRED)
 
 ```
-74 88 <device_id> 00 00 00 DE <pwd_hi> <pwd_lo>
+74 88 <device_id> 00 00 DE <pwd_hi> <pwd_lo>
 ```
 
-The phone app emits this every ~150–300 ms throughout the entire connection.
-**The relay considers a session "alive" only while these arrive.** If they
-stop, the box stops accepting commands shortly after. Confirmed from the Mac
-tester: without keepalives, a single isolated write may still execute, but
-multi-step sequences (e.g. dim ramp) start failing within a few seconds.
+The official app emits this every ~150–300 ms for the whole session.
+**The relay considers a session "alive" only while these arrive.** Without
+them, multi-step sequences (dim ramps, rapid toggles) start failing within a
+few seconds.
 
-In ESPHome put a `script` on a 200 ms `interval:` that fires while the BLE
-client is connected — that's exactly what `trigger4p_esphome.yaml` does.
+`trigger4p_esphome.yaml` mirrors that with a `200ms` `interval:` that writes
+this frame whenever `trigger_link_up` is true.
 
-A second 9-byte variant `74 88 00 00 00 00 DE <pwd_hi> <pwd_lo>` (note `00`
-at byte 2 in place of the device ID) was seen 4× during connection setup.
-Sending it isn't required to make commands work; treat as cosmetic.
+**Historical mistake:** an earlier revision used a **9-byte** keepalive
+(`… 00 00 00 DE …`). On hardware used to validate this project, that extra
+`0x00` **shifted the parser** so subsequent dim frames corrupted unrelated
+action bytes (symptoms: wrong channel strobing, passenger dropping out).
+Stick to **8 bytes**.
+
+During connection setup, captures occasionally show `74 88 00 00 00 00 DE …`
+(device-ID byte forced to `00`). It is not required for reliable control when
+using the 8-byte keepalive above with the real device ID.
 
 ### Action codes for opcode `0x21` (switch actions)
 
-Each physical channel gets a contiguous block of 4 codes: ON, OFF, BLINK,
-STEADY. SW1 + SW2 are physically verified; SW3 + SW4 are inferred by the
-contiguous-block pattern (the units I tested only had 2 channels wired).
+Each output channel uses one contiguous block of four bytes: **ON, OFF,
+BLINK-on, STEADY** (clear blink). Source order in the decompiled Android APK
+(`fourbottonctl`) plus on-wire verification:
 
-| Channel | ON | OFF | BLINK on | BLINK off (steady) | Verified? |
-|---------|----|-----|----------|--------------------|-----------|
-| SW1 | `0xEE` | `0xEF` | `0xF0` | `0xF1` | yes — physically observed |
-| SW2 | `0xF2` | `0xF3` | `0xF4` | `0xF5` | yes — physically observed |
-| SW3 | `0xF6` | `0xF7` | `0xF8` | `0xF9` | inferred from contiguous pattern |
-| SW4 | `0xFA` | `0xFB` | `0xFC` | `0xFD` | inferred |
+| APK channel | ON | OFF | BLINK on | STEADY | Notes |
+|-------------|----|-----|----------|--------|-------|
+| **Ch1** | `0xEA` | `0xEB` | `0xEC` | `0xED` | |
+| **Ch2** | `0xEE` | `0xEF` | `0xF0` | `0xF1` | mapped as **passenger** in `trigger4p_esphome.yaml` |
+| **Ch3** | `0xF2` | `0xF3` | `0xF4` | `0xF5` | mapped as **driver** |
+| **Ch4** | `0xF6` | `0xF7` | `0xF8` | `0xF9` | |
+
+In `test_trigger_from_mac.py`, historical convenience names are **`sw1` =
+Ch2**, **`sw2` = Ch3**, **`sw3` = Ch4**, **`sw4` = Ch1** (only the first two
+are exposed as HA switches in the reference YAML).
 
 Notes on blink:
 
@@ -226,19 +236,27 @@ Notes on blink:
   clear the blink bit. If you want a clean state, send `<steady>` then
   `<off>`.
 
-### Opcode `0x2D` — set dim level
+### Opcode `0x2D` — set dim level (global)
 
 ```
-74 88 <device_id> 2D <level> 00 <pwd_hi> <pwd_lo>
+74 88 <device_id> 2D <inv> 00 <pwd_hi> <pwd_lo>
 ```
 
-- `<level>` is byte 4: any value `0x00`–`0xFF`. `0x00` is off-equivalent
-  (lowest), `0xFF` is full bright. A captured slider sweep covered `0x13` →
-  `0xC6` smoothly.
-- Byte 5 is `0x00`, **not** `0xDE`.
-- The dim level appears to apply to whatever channel(s) are currently
-  solid-ON. Per-channel independent dim was not observed in the captured
-  app traffic and may not be supported by this firmware revision.
+- Byte 4 is **`inv = 0xFF − UI_level`** where **UI_level** is what you surface
+  in Home Assistant or pass to `test_trigger_from_mac.py dim …`:
+  **255 = brightest** ⇒ wire `0x00`; dimmer UI values ⇒ larger wire bytes.
+  Captured phone slider sweeps land on the inverted wire byte, not on raw “higher
+  = brighter.”
+- Byte 5 is always `0x00` for dim (`0xDE` is only for `0x21` / keepalive).
+- **Single shared dim:** only **`0x2D`** produced a visible brightness change on
+  the hardware used to lock this repo. The APK references **`0x2B`–`0x2E`**
+  “per-channel” dim opcodes for 4-PLUS; **`0x2C` was a no-op** when exercised in
+  isolation — treat per-channel dim as **toolchain/UI residue**, not something
+  you can rely on across units until you sniff your own box.
+- With **both** channels ON, changing dim adjusts a shared PWM register; you
+  may see the “other” output breathe or shimmer slightly when it is not the item
+  you touched in HA — distinct from the **FFF7-notify bug**, which caused hard
+  strobing until notifications were subscribed.
 
 ### Opcode `0x2B` — dim slider state markers
 
@@ -299,13 +317,18 @@ and low bytes of your PIN.
 | SW2 OFF | `74 88 <id> 21 F3 DE <HI> <LO>` |
 | SW2 blink | `74 88 <id> 21 F4 DE <HI> <LO>` |
 | SW2 steady | `74 88 <id> 21 F5 DE <HI> <LO>` |
-| Set dim level 0x80 (mid) | `74 88 <id> 2D 80 00 <HI> <LO>` |
-| Keepalive (every 200 ms) | `74 88 <id> 00 00 00 DE <HI> <LO>` |
+| Set UI dim ≈ mid (UI `128` ⇒ wire `0x7F`) | `74 88 <id> 2D 7F 00 <HI> <LO>` |
+| Set UI dim full bright (255 ⇒ wire `0x00`) | `74 88 <id> 2D 00 00 <HI> <LO>` |
+| Keepalive (every ~200 ms) | `74 88 <id> 00 00 DE <HI> <LO>` |
 
 ---
 
 ## Important behavioral notes
 
+- **Subscribe `0xFFF7`.** Third-party firmware must enable BLE notifications
+  on **`FFF7`** while connected (the bundled ESPHome uses an internal
+  `ble_client` sensor). Skipping this caused **severe cross-talk while dimming**
+  on validated hardware until the notify stream was opened.
 - **WiFi gives up after 60 s.** If the C6 boots and can't associate with
   WiFi within 60 s, the firmware disables WiFi entirely so the shared
   2.4 GHz radio belongs to BLE. Power-cycle to retry WiFi. This is the
@@ -319,9 +342,30 @@ and low bytes of your PIN.
   state of `switch.both_lights` = `passenger_light AND driver_light`.
   Toggling the master cascades to the children with a 300 ms gap; toggling
   a single child updates the master automatically.
-- **Dim is global** on this firmware revision — moving the slider affects
-  whichever channels are currently solid-ON. Per-channel dim was not
-  observed in the captured app traffic.
+- **Dim is global (`0x2D` only)** on the validated unit — the HA slider is
+  intentionally coarse (**51–255**, step **51**) to avoid diving into unusably
+  low duty cycles on long LED runs. Tune in YAML if your loads behave
+  differently.
+
+---
+
+## Implementing your own bridge (ESPHome, scripts, microcontrollers)
+
+Minimal checklist that matches **validated** behavior on at least one Trigger
+4 Plus unit:
+
+1. **Write Without Response** only on **`FFF6`** (BLE opcode `0x52`).
+2. **Subscribe to notify on `FFF7`** for the whole session — do not leave this
+   characteristic idle while spamming writes.
+3. Emit the **8-byte** keepalive (`74 88 <id> 00 00 DE …`) every **~200 ms**
+   while connected — **not** the obsolete 9-byte form.
+4. For opcode **`0x2D`**, send **`inv = 0xFF − UI_brightness`** in byte 4;
+   byte 5 must be **`0x00`**.
+5. Serialize bursts (ESPHome example uses **`mode: queued`** scripts + **300 ms**
+   spacing between paired channel writes).
+
+The reference firmware is `trigger4p_esphome.yaml` — copy `secrets.example.yaml`
+to `secrets.yaml` and adjust GPIO/pin definitions if you move off the NanoC6.
 
 ---
 
@@ -361,5 +405,5 @@ subcommand to replay arbitrary captured frames before committing to firmware.
 MIT — see [`LICENSE`](LICENSE).
 
 This repo contains **no manufacturer code**. The protocol description is
-derived entirely from observing BLE traffic and from physically operating
-the relay.
+derived from BLE captures, replay with Python/`bleak`, decompiled Android
+APK resources for opcode/action tables, and physically operating the relay.

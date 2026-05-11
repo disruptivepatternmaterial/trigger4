@@ -6,8 +6,9 @@ official phone app writes to. Verified against real hardware:
   - Handle 0x0035 / UUID 0xFFF6, properties 0x04 (Write Without Response only).
   - The box rejects opcode 0x12 (Write Request); use opcode 0x52 (Write Cmd).
   - Status notifications come back on FFF7 as 5-byte frames.
-  - 200 ms keepalives are required for any multi-step sequence to remain
-    accepted by the firmware.
+  - 200 ms keepalives (8-byte frame, matching the official app) are required
+    for any multi-step sequence to remain accepted by the firmware.
+  - Dim opcode 0x2D uses wire byte (0xFF - slider); slider 255 => brightest.
 
 See README.md for the full byte-level reference.
 
@@ -30,8 +31,8 @@ Usage:
     python3 test_trigger_from_mac.py both_off
     python3 test_trigger_from_mac.py both_blink_on
     python3 test_trigger_from_mac.py both_blink_off
-    python3 test_trigger_from_mac.py dim 0x80        # set dim level 0..255
-    python3 test_trigger_from_mac.py raw 7488XX21EE...   # arbitrary 8/9B
+    python3 test_trigger_from_mac.py dim 0x80        # UI level 0..255 (bright..dim wire byte inverted)
+    python3 test_trigger_from_mac.py raw 748844210EEDE2425   # example 8-byte frame (replace PIN bytes)
 """
 import asyncio
 import os
@@ -57,13 +58,18 @@ def action_frame(action: int) -> bytes:
 
 
 def dim_frame(level: int) -> bytes:
-    """0x2D set dim level (0..255). Note byte 5 is 0x00, NOT 0xDE."""
-    return bytes([0x74, 0x88, DEVICE_ID, 0x2D, level & 0xFF, 0x00, PWD_HI, PWD_LO])
+    """0x2D set dim: wire byte = inverted UI slider (matches official app + ESPHome)."""
+    inv = (0xFF - (level & 0xFF)) & 0xFF
+    return bytes([0x74, 0x88, DEVICE_ID, 0x2D, inv, 0x00, PWD_HI, PWD_LO])
 
 
-KEEPALIVE = bytes([0x74, 0x88, DEVICE_ID, 0x00, 0x00, 0x00, 0xDE, PWD_HI, PWD_LO])
+# 8-byte keepalive — must match phone app / trigger4p_esphome.yaml (a prior
+# 9-byte variant desynced the parser and broke dimming).
+KEEPALIVE = bytes([0x74, 0x88, DEVICE_ID, 0x00, 0x00, 0xDE, PWD_HI, PWD_LO])
 
-# action code map (verified for SW1/SW2; SW3/SW4 inferred by contiguous block)
+# Action codes from decompiled TRIGGER 4 PLUS UI + on-wire verification.
+# CLI sw1/sw2 match the common two-output wiring used in the ESPHome example
+# (passenger = APK ch2, driver = APK ch3). sw3/sw4 cover the remaining APK blocks.
 ACTIONS = {
     "sw1_on":         0xEE,
     "sw1_off":        0xEF,
@@ -77,10 +83,11 @@ ACTIONS = {
     "sw3_off":        0xF7,
     "sw3_blink_on":   0xF8,
     "sw3_blink_off":  0xF9,
-    "sw4_on":         0xFA,
-    "sw4_off":        0xFB,
-    "sw4_blink_on":   0xFC,
-    "sw4_blink_off":  0xFD,
+    # APK channel 1 (EA–ED) — older repo revisions wrongly used 0xFA–0xFD here.
+    "sw4_on":         0xEA,
+    "sw4_off":        0xEB,
+    "sw4_blink_on":   0xEC,
+    "sw4_blink_off":  0xED,
 }
 
 # Multi-step macros: list of bytes to write in order, with INTER_S between each.

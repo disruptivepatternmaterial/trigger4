@@ -8,7 +8,7 @@
 #   switch.driver_blink          (SW2 blink mode)
 #   switch.both_lights           (master — derived state, cascades to children)
 #   switch.both_blink            (master — derived state, cascades to children)
-#   number.dim_level             (0..255 — global dim, opcode 0x2D)
+#   number.dim_level             (51..255 step 51 — global dim, opcode 0x2D)
 #   light.trigger_status_led     (onboard NanoC6 RGB LED — BLE link status)
 #   binary_sensor.trigger_test_button  (onboard GPIO9 button)
 #
@@ -35,10 +35,11 @@
 #     ch4            : F6 on, F7 off, F8 blink, F9 steady
 #
 # Design notes:
-#   - Mirrors test_trigger_from_mac.py exactly: write 8 bytes, 300 ms gap,
-#     write 8 bytes, with 200 ms keepalives running concurrently.
-#   - send_action is `mode: queued` so calls serialize naturally; no busy
-#     flag, no LED-in-the-write-path, no FFF7 sensor.
+#   - Mirrors test_trigger_from_mac.py: 8-byte frames, 300 ms between paired
+#     writes, 200 ms keepalives, NOTIFY on FFF7 (required — see README).
+#   - send_action / send_dim are `mode: queued` so BLE writes serialize.
+#   - Internal ble_client sensor on FFF7 keeps notifications flowing;
+#     omitting this caused cross-channel flicker when dimming with both on.
 #   - Master switches derive state from children via lambda; turn_on/turn_off
 #     cascade through the children with INTER_ACTION_MS spacing.
 #   - Status LED reflects BLE link state only (red = down, green = up).
@@ -169,7 +170,7 @@ globals:
     initial_value: !secret trigger_password
 
 # ---------------------------------------------------------------------------
-# Scripts — minimal. Each writes exactly 8 or 9 bytes to FFF6 and returns.
+# Scripts — minimal. Each writes exactly 8 bytes to FFF6 and returns.
 # No state machines, no busy flags, no LED side-effects.
 # ---------------------------------------------------------------------------
 script:
