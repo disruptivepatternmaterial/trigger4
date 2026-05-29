@@ -17,6 +17,18 @@
 !trigger4p_esphome.yaml
 !test_trigger_from_mac.py
 
+# --- AtomS3 standalone firmware --------------------------------------------
+# Publish the source tree; keep build output (.pio), generated sdkconfig
+# snapshots, and the local secrets.h out of the repo.
+!atoms3-firmware/
+!atoms3-firmware/**
+atoms3-firmware/.pio/
+atoms3-firmware/.esphome/
+atoms3-firmware/main/secrets.h
+atoms3-firmware/sdkconfig
+atoms3-firmware/sdkconfig.m5atoms3
+atoms3-firmware/sdkconfig 2.m5atoms3
+
 # Belt-and-braces: never commit real secrets even if the rule above changes.
 secrets.yaml
 

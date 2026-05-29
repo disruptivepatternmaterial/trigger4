@@ -7,7 +7,10 @@ Reverse-engineered Bluetooth Low Energy protocol for the **TRIGGER ACS Plus**
   any laptop with Bluetooth — no microcontroller required, and
 - an **ESPHome firmware** (`trigger4p_esphome.yaml`) that turns an ESP32-C6
   (M5Stack NanoC6, but any ESP32-C6 board works) into a permanent BLE bridge
-  exposing the relay to Home Assistant as plain switches and a dim slider.
+  exposing the relay to Home Assistant as plain switches and a dim slider, and
+- a **standalone AtomS3 controller** ([`atoms3-firmware/`](atoms3-firmware/)) —
+  native ESP-IDF firmware that makes an M5Stack AtomS3 a handheld BLE
+  remote + status display for the relay, no phone or Home Assistant needed.
 
 The protocol write-up below combines Wireshark captures (`nRF52840` +
 `nRF Sniffer for Bluetooth LE`), replay from macOS with `bleak`,
@@ -27,6 +30,7 @@ between APK hints and on-unit results (especially dimming).
 | [`README.md`](README.md) | This document — protocol spec + how-to |
 | [`trigger4p_esphome.yaml`](trigger4p_esphome.yaml) | ESPHome config for an ESP32-C6 BLE bridge to the relay |
 | [`test_trigger_from_mac.py`](test_trigger_from_mac.py) | Python reference client / "protocol oracle" — run from a laptop |
+| [`atoms3-firmware/`](atoms3-firmware/) | Standalone M5Stack AtomS3 BLE controller + status display (ESP-IDF) |
 | [`secrets.example.yaml`](secrets.example.yaml) | Template for `secrets.yaml` (gitignored) |
 | [`LICENSE`](LICENSE) | MIT |
 

@@ -38,6 +38,9 @@
 #   - Mirrors test_trigger_from_mac.py: 8-byte frames, 300 ms between paired
 #     writes, 200 ms keepalives, NOTIFY on FFF7 (required — see README).
 #   - send_action / send_dim are `mode: queued` so BLE writes serialize.
+#   - send_action / send_dim intentionally send a short keepalive preamble and
+#     duplicate payload write. This preserves command semantics (ON/OFF/etc are
+#     idempotent) but improves recovery when the link is momentarily stale.
 #   - Internal ble_client sensor on FFF7 keeps notifications flowing;
 #     omitting this caused cross-channel flicker when dimming with both on.
 #   - Master switches derive state from children via lambda; turn_on/turn_off
@@ -189,6 +192,37 @@ script:
                 service_uuid: "FFF0"
                 characteristic_uuid: "FFF6"
                 value: !lambda |-
+                  // Keepalive preamble nudges stale sessions before action write.
+                  return std::vector<uint8_t>{
+                    0x74, 0x88,
+                    (uint8_t) ${trigger_device_id},
+                    0x00, 0x00,
+                    0xDE,
+                    (uint8_t) ((id(trigger_password) >> 8) & 0xFF),
+                    (uint8_t)  (id(trigger_password)       & 0xFF)
+                  };
+            - delay: 40ms
+            - ble_client.ble_write:
+                id: trigger_client
+                service_uuid: "FFF0"
+                characteristic_uuid: "FFF6"
+                value: !lambda |-
+                  return std::vector<uint8_t>{
+                    0x74, 0x88,
+                    (uint8_t) ${trigger_device_id},
+                    0x21,
+                    (uint8_t) action,
+                    0xDE,
+                    (uint8_t) ((id(trigger_password) >> 8) & 0xFF),
+                    (uint8_t)  (id(trigger_password)       & 0xFF)
+                  };
+            - delay: 40ms
+            - ble_client.ble_write:
+                id: trigger_client
+                service_uuid: "FFF0"
+                characteristic_uuid: "FFF6"
+                value: !lambda |-
+                  // Duplicate action write improves reliability after link idle.
                   return std::vector<uint8_t>{
                     0x74, 0x88,
                     (uint8_t) ${trigger_device_id},
@@ -216,6 +250,37 @@ script:
                 service_uuid: "FFF0"
                 characteristic_uuid: "FFF6"
                 value: !lambda |-
+                  // Keepalive preamble nudges stale sessions before dim write.
+                  return std::vector<uint8_t>{
+                    0x74, 0x88,
+                    (uint8_t) ${trigger_device_id},
+                    0x00, 0x00,
+                    0xDE,
+                    (uint8_t) ((id(trigger_password) >> 8) & 0xFF),
+                    (uint8_t)  (id(trigger_password)       & 0xFF)
+                  };
+            - delay: 40ms
+            - ble_client.ble_write:
+                id: trigger_client
+                service_uuid: "FFF0"
+                characteristic_uuid: "FFF6"
+                value: !lambda |-
+                  return std::vector<uint8_t>{
+                    0x74, 0x88,
+                    (uint8_t) ${trigger_device_id},
+                    0x2D,
+                    (uint8_t) (0xFF - (level & 0xFF)),
+                    0x00,
+                    (uint8_t) ((id(trigger_password) >> 8) & 0xFF),
+                    (uint8_t)  (id(trigger_password)       & 0xFF)
+                  };
+            - delay: 40ms
+            - ble_client.ble_write:
+                id: trigger_client
+                service_uuid: "FFF0"
+                characteristic_uuid: "FFF6"
+                value: !lambda |-
+                  // Duplicate dim write helps punch through brief link stalls.
                   return std::vector<uint8_t>{
                     0x74, 0x88,
                     (uint8_t) ${trigger_device_id},
