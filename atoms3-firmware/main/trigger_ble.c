@@ -372,7 +372,15 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event,
         }
         break;
 
+    case ESP_GATTC_WRITE_DESCR_EVT:
+        ESP_LOGI(TAG, "CCCD write result: status=%d handle=0x%04X",
+                 p->write.status, p->write.handle);
+        break;
+
     case ESP_GATTC_NOTIFY_EVT: {
+        ESP_LOGD(TAG, "NOTIFY_EVT handle=0x%04X (want 0x%04X) len=%d is_notify=%d",
+                 p->notify.handle, s_ble.notify_handle,
+                 p->notify.value_len, p->notify.is_notify);
         if (p->notify.handle != s_ble.notify_handle) break;
         trg_state_t st;
         trigger_proto_parse_state(p->notify.value, p->notify.value_len, &st);

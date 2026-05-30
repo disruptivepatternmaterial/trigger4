@@ -85,6 +85,42 @@ static void apply_both(bool on, bool blink) {
     }
 }
 
+/* Optional power-on self-test: once linked, pulse both channels ON then OFF
+ * so the box's 0xFFF7 state notifications can be observed to confirm the
+ * command path end-to-end without a physical button press. Build with
+ * -DTRG_SELFTEST=1 to enable; off in production. */
+#ifndef TRG_SELFTEST
+#define TRG_SELFTEST 0
+#endif
+
+#if TRG_SELFTEST
+static void run_selftest_once(void) {
+    static bool done = false;
+    if (done || !trigger_ble_is_linked()) return;
+    done = true;
+    ESP_LOGW("SELFTEST", "linked — sending both ON");
+    trigger_ble_send_dim(DIM_MAX);
+    apply_both(true, false);
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    ESP_LOGW("SELFTEST", "sending both OFF");
+    apply_both(false, false);
+    ESP_LOGW("SELFTEST", "done — watch the 'notify state=' lines above for the "
+                         "channel bits going set then clear");
+}
+#endif
+
+/* The box does not stream state notifications for BLE-commanded changes, so
+ * mirror the commanded state into the UI model. ch2/ch3 are the two driven
+ * channels (passenger/driver); the pills become a command echo. */
+static void push_optimistic_state(void) {
+    trg_state_t st = {0};
+    st.valid     = true;
+    st.ch2_on    = s_both_on;
+    st.ch3_on    = s_both_on;
+    st.ch2_blink = s_both_on && s_both_blink;
+    trigger_state_set_channels(&st);
+}
+
 static void handle_button_event(btn_event_t ev) {
     if (ev == BTN_EV_NONE || !trigger_ble_is_linked()) return;
     switch (ev) {
@@ -96,11 +132,13 @@ static void handle_button_event(btn_event_t ev) {
         }
         s_both_blink = false;
         apply_both(s_both_on, false);
+        push_optimistic_state();
         break;
     case BTN_EV_DOUBLE:
         s_both_blink = !s_both_blink;
         s_both_on = true;             /* blink only shows on a lit channel */
         apply_both(true, s_both_blink);
+        push_optimistic_state();
         break;
     case BTN_EV_LONG: {
         int next = (int)s_dim_level + DIM_STEP;
@@ -161,6 +199,9 @@ void app_main(void) {
      * roughly every 150 ms. */
     int ticks_since_paint = 0;
     while (1) {
+#if TRG_SELFTEST
+        run_selftest_once();
+#endif
         handle_button_event(poll_button_event());
         if (++ticks_since_paint >= (150 / BTN_POLL_MS)) {
             trigger_ui_tick();
