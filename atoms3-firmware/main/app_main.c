@@ -71,17 +71,22 @@ static btn_event_t poll_button_event(void) {
     return BTN_EV_NONE;
 }
 
+/* Send one action to both driven channels (passenger ch2 + driver ch3). */
+static void send_both(trg_action_t act) {
+    trigger_ble_send_action(TRG_CH2, act);
+    trigger_ble_send_action(TRG_CH3, act);
+}
+
+/* ON/OFF for the short-press toggle. Blink is handled separately because
+ * clearing blink requires STEADY, not ON (plain ON leaves the channel
+ * blinking). */
 static void apply_both(bool on, bool blink) {
-    /* ON path resets dim to full first, like the ESPHome single-click. */
     if (on && blink) {
-        trigger_ble_send_action(TRG_CH2, TRG_ACT_BLINK);
-        trigger_ble_send_action(TRG_CH3, TRG_ACT_BLINK);
+        send_both(TRG_ACT_BLINK);
     } else if (on) {
-        trigger_ble_send_action(TRG_CH2, TRG_ACT_ON);
-        trigger_ble_send_action(TRG_CH3, TRG_ACT_ON);
+        send_both(TRG_ACT_ON);
     } else {
-        trigger_ble_send_action(TRG_CH2, TRG_ACT_OFF);
-        trigger_ble_send_action(TRG_CH3, TRG_ACT_OFF);
+        send_both(TRG_ACT_OFF);
     }
 }
 
@@ -98,14 +103,19 @@ static void run_selftest_once(void) {
     static bool done = false;
     if (done || !trigger_ble_is_linked()) return;
     done = true;
-    ESP_LOGW("SELFTEST", "linked — sending both ON");
+    ESP_LOGW("SELFTEST", "linked — both ON");
     trigger_ble_send_dim(DIM_MAX);
-    apply_both(true, false);
+    send_both(TRG_ACT_ON);
     vTaskDelay(pdMS_TO_TICKS(2000));
-    ESP_LOGW("SELFTEST", "sending both OFF");
-    apply_both(false, false);
-    ESP_LOGW("SELFTEST", "done — watch the 'notify state=' lines above for the "
-                         "channel bits going set then clear");
+    ESP_LOGW("SELFTEST", "blink ON (expect blink bits 0x40/0x80 in state)");
+    send_both(TRG_ACT_BLINK);
+    vTaskDelay(pdMS_TO_TICKS(2500));
+    ESP_LOGW("SELFTEST", "blink OFF via STEADY (expect blink bits to clear)");
+    send_both(TRG_ACT_STEADY);
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    ESP_LOGW("SELFTEST", "both OFF");
+    send_both(TRG_ACT_OFF);
+    ESP_LOGW("SELFTEST", "done");
 }
 #endif
 
@@ -137,7 +147,8 @@ static void handle_button_event(btn_event_t ev) {
     case BTN_EV_DOUBLE:
         s_both_blink = !s_both_blink;
         s_both_on = true;             /* blink only shows on a lit channel */
-        apply_both(true, s_both_blink);
+        /* STEADY (not ON) is what clears blink mode on the box. */
+        send_both(s_both_blink ? TRG_ACT_BLINK : TRG_ACT_STEADY);
         push_optimistic_state();
         break;
     case BTN_EV_LONG: {
