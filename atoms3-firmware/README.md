@@ -116,10 +116,17 @@ observed, not what the code _should_ do.
 | ----- | ------ |
 | Compiles clean on platform-espressif32 6.11.0 / IDF 5.4.1 | ✅ Verified (`[SUCCESS]`, 2026-05-29) |
 | Boots, inits M5GFX + BLE, starts scanning for `Trigger 4 Plus` | ✅ Verified on hardware (serial log) |
-| Connects, reaches `LINKED`, and holds the box with the 200 ms keepalive | ✅ Verified on hardware (2026-05-29, serial: `Found 'Trigger 4 Plus' … connecting` → `service 0xFFF0 handles 35..` → `write char 0xFFF6 = 0x0035` → `CCCD write result: status=0` → `link is up`). Box also stops advertising and stays held across repeated host scans for 40 s+, which can't happen unless the keepalive is running. |
-| Commands transmit over the live link (action + dim) | ✅ Verified on hardware via a built-in self-test (`-DTRG_SELFTEST=1`): on link it sent `dim→00`, both ON (`EE`,`F2`), both OFF (`EF`,`F3`); every `esp_ble_gattc_write_char` returned `ESP_OK` over the same channel the accepted keepalive uses. |
-| LEDs physically change | ⚠️ **Not directly observed** (no camera on the bumper from the bench). High confidence: the action/dim bytes are identical to the verified `../test_trigger_from_mac.py` / `../trigger4p_esphome.yaml` and use the same authenticated path as the keepalive the box accepts. Eyeball the lights on first button use. |
-| On-screen channel pills reflect **live** box state | ❌ **Not working as a live mirror.** The CCCD subscription succeeds (`status=0`) but the box sent **zero** `0xFFF7` notifications in 18 s of testing, including right after BLE-initiated channel changes. The box appears to only notify on its own physical-button changes, not BLE-commanded ones. The pills therefore track what we *send*, not authoritative box state. Treat the display as a command echo, not a sensor. |
+| Connects, reaches `LINKED`, holds the box with the 200 ms keepalive | ✅ Verified on hardware (2026-05-29, serial: `Found 'Trigger 4 Plus' … connecting` → `write char 0xFFF6 = 0x0035` → `CCCD write result: status=0` → `link is up`). |
+| Commands physically switch the relay | ✅ Verified on hardware. Self-test (`-DTRG_SELFTEST=1`) sent both ON (`EE`,`F2`) then both OFF (`EF`,`F3`); the bumper LEDs turned on then off, and the box's own state notifications confirmed the change (below). |
+| On-screen channel pills reflect **live** box state | ✅ Verified. The box streams `0xFFF7` notifications continuously (~200 ms). During the self-test the state byte tracked the commands exactly: `0x00 → 0x04 → 0x0C` (ch1+ch2 on) then `0x0C → 0x08 → 0x00` (off). The UI also pushes an optimistic echo for instant feedback before the next notification. |
+
+> **Authentication matters.** The box silently ignores every command **and**
+> withholds its notification stream unless `TRIGGER_DEVICE_ID` (frame byte 2)
+> and `TRIGGER_PASSWORD` (frame bytes 6–7) match the values the unit was
+> configured with in the official app. If the Atom connects (`link is up`) but
+> nothing happens and you see no `notify state=` lines, your PIN is wrong.
+> Read the real bytes off the phone's keepalive in a sniff: `74 88 <id> 00 00
+> DE <pwd_hi> <pwd_lo>` — e.g. `…DE 04 D2` ⇒ password `0x04D2` = 1234.
 
 ### Historical note (the bugs that made it "do nothing")
 
@@ -137,3 +144,11 @@ Three separate defects, all fixed 2026-05-29:
 3. **Never controlled anything.** The prior build was a read-only status
    display that only transmitted keepalives. The single button is now wired to
    send action/dim frames (see **Controls**).
+4. **Wrong PIN → silently ignored.** `secrets.h` shipped with a placeholder
+   password. With the wrong password the box accepts the GATT connection but
+   ignores all commands and sends no state notifications — looks identical to a
+   protocol bug. Fixed by reading the real PIN (`0x04D2` = 1234) out of the
+   phone's keepalive frame in `../triggersniff_dim_blink_v2.pcap`.
+5. **State parser rejected live frames.** The parser required notification byte
+   3 to equal `0x62`, but on real hardware byte 3 varies (`0x62` and `0x5D`
+   seen); byte 4 is the device id. Relaxed to validate only the `6E 00` header.

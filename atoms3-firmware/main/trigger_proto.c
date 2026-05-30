@@ -74,8 +74,11 @@ void trigger_proto_parse_state(const uint8_t *frame, size_t frame_len, trg_state
         out->valid = false;
         return;
     }
-    /* Expected: 6E 00 <state> 62 44 */
-    if (frame[0] != 0x6E || frame[1] != 0x00 || frame[3] != 0x62 || frame[4] != 0x44) {
+    /* Live frames are 6E 00 <state> <b3> <device_id>. Header bytes 0/1 are
+     * constant; byte 3 varies on real hardware (seen 0x62 and 0x5D — not a
+     * fixed marker, so do NOT gate on it); byte 4 echoes the device id. Only
+     * the header is required to trust the state byte. */
+    if (frame[0] != 0x6E || frame[1] != 0x00) {
         out->valid = false;
         out->raw_state = (frame_len >= 3) ? frame[2] : 0;
         return;
