@@ -111,26 +111,20 @@ static bool addr_matches_pinned(const esp_bd_addr_t bda) {
 #endif
 }
 
-/* Walk a BLE adv-data buffer and return true if it contains a complete or
- * shortened local name matching TRG_DEVICE_NAME. */
-static bool adv_name_matches(const uint8_t *adv, uint8_t len) {
+/* Return true if the advertisement (or its scan response) carries a local
+ * name matching TRG_DEVICE_NAME. esp_ble_resolve_adv_data searches the whole
+ * combined adv + scan-response buffer, which matters here: the TRIGGER box
+ * puts its complete name in the scan response, not the primary adv packet. */
+static bool adv_name_matches(uint8_t *adv) {
     if (adv == NULL) return false;
-    uint8_t i = 0;
-    while (i + 1 < len) {
-        uint8_t fld_len = adv[i];
-        if (fld_len == 0 || i + 1 + fld_len > len) break;
-        uint8_t fld_type = adv[i + 1];
-        if (fld_type == ESP_BLE_AD_TYPE_NAME_CMPL ||
-            fld_type == ESP_BLE_AD_TYPE_NAME_SHORT) {
-            uint8_t name_len = fld_len - 1;
-            if (name_len == strlen(TRG_DEVICE_NAME) &&
-                memcmp(&adv[i + 2], TRG_DEVICE_NAME, name_len) == 0) {
-                return true;
-            }
-        }
-        i += 1 + fld_len;
+    const size_t want = strlen(TRG_DEVICE_NAME);
+    uint8_t len = 0;
+    uint8_t *name = esp_ble_resolve_adv_data(adv, ESP_BLE_AD_TYPE_NAME_CMPL, &len);
+    if (name == NULL || len == 0) {
+        name = esp_ble_resolve_adv_data(adv, ESP_BLE_AD_TYPE_NAME_SHORT, &len);
     }
-    return false;
+    if (name == NULL || len == 0) return false;
+    return len == want && memcmp(name, TRG_DEVICE_NAME, want) == 0;
 }
 
 /* Write one 8-byte frame to 0xFFF6. WRITE_NO_RSP is required — the box
@@ -312,7 +306,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         struct ble_scan_result_evt_param *sr = &p->scan_rst;
         if (sr->search_evt != ESP_GAP_SEARCH_INQ_RES_EVT) break;
 
-        bool match = adv_name_matches(sr->ble_adv, sr->adv_data_len);
+        bool match = adv_name_matches(sr->ble_adv);
         if (!match) match = addr_matches_pinned(sr->bda);
         if (!match) break;
 

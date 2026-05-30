@@ -114,15 +114,24 @@ observed, not what the code _should_ do.
 
 | Claim | Status |
 | ----- | ------ |
-| Compiles clean on platform-espressif32 6.11.0 / IDF 5.4.1 | ✅ Verified (`[SUCCESS]`, May 29 2026) |
+| Compiles clean on platform-espressif32 6.11.0 / IDF 5.4.1 | ✅ Verified (`[SUCCESS]`, 2026-05-29) |
 | Boots, inits M5GFX + BLE, starts scanning for `Trigger 4 Plus` | ✅ Verified on hardware (serial log) |
-| Connects (`LINKED`), receives notifications, button drives the relay | 🚧 **NOT YET HARDWARE-VERIFIED** — command/connect path is code-reviewed and byte-identical to the verified `../test_trigger_from_mac.py` / `../trigger4p_esphome.yaml`, but not yet observed end-to-end on the box. Verify against the live unit before trusting. |
+| Connects, reaches `LINKED`, and holds the box with the 200 ms keepalive | ✅ Verified on hardware (2026-05-29). With the box powered on, after flashing the box **stops advertising** and stays connected across repeated host scans for 40 s+. The TRIGGER box re-advertises within a few seconds if the keepalive stops, so sustained non-advertising proves the link reached `LINKED` (keepalive only starts after CCCD enable). |
+| Button drives the relay (on / off / blink / dim) | ⚠️ Command writes use the **same** `0xFFF6` WRITE_NO_RSP path as the verified keepalive, and the action/dim bytes are identical to the verified `../test_trigger_from_mac.py` / `../trigger4p_esphome.yaml`. **Visually confirm the LEDs** on first use (press the button with the box powered). |
 
-### Historical note
+### Historical note (the bugs that made it "do nothing")
 
-The first version of this firmware **never compiled**: it called the
-non-existent `esp_ble_gap_start_scan` (the real IDF API is
-`esp_ble_gap_start_scanning`) and defined `TRIGGER_PIN_MAC NULL`, which breaks
-the `#if` preprocessor guard. Both were fixed on 2026-05-29 along with wiring
-the button to actually send action/dim frames (the prior build was a read-only
-status display that never transmitted any command).
+Three separate defects, all fixed 2026-05-29:
+
+1. **Never compiled.** Called the non-existent `esp_ble_gap_start_scan` (real
+   IDF API: `esp_ble_gap_start_scanning`) and defined `TRIGGER_PIN_MAC NULL`,
+   which breaks the `#if` preprocessor guard. Two hard compile errors — so no
+   working binary was ever produced.
+2. **Never connected.** The scanner parsed only the primary advertising packet
+   (`adv_data_len` bytes). The TRIGGER box advertises its **name in the scan
+   response**, so the name never matched and it scanned forever. Fixed by using
+   `esp_ble_resolve_adv_data`, which searches the combined adv + scan-response
+   buffer.
+3. **Never controlled anything.** The prior build was a read-only status
+   display that only transmitted keepalives. The single button is now wired to
+   send action/dim frames (see **Controls**).
