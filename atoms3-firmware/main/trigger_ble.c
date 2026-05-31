@@ -102,80 +102,45 @@ static void start_scan(void) {
 }
 
 static bool addr_matches_pinned(const esp_bd_addr_t bda) {
-#ifdef TRIGGER_PIN_MAC
-    static const uint8_t pinned[6] = TRIGGER_PIN_MAC;
-    return memcmp(bda, pinned, 6) == 0;
-#else
+    /* MAC pinning omitted in MVP — name-based discovery is enough for a
+     * single-unit pairing. If you have multiple TRIGGER 4 Plus units in
+     * BLE range and need to pin one, replace this stub with a memcmp
+     * against a 6-byte literal MAC. */
     (void)bda;
     return false;
-#endif
 }
 
-/* Return true if the advertisement (or its scan response) carries a local
- * name matching TRG_DEVICE_NAME. esp_ble_resolve_adv_data searches the whole
- * combined adv + scan-response buffer, which matters here: the TRIGGER box
- * puts its complete name in the scan response, not the primary adv packet. */
-static bool adv_name_matches(uint8_t *adv) {
-    if (adv == NULL) return false;
-    const size_t want = strlen(TRG_DEVICE_NAME);
-    uint8_t len = 0;
-    uint8_t *name = esp_ble_resolve_adv_data(adv, ESP_BLE_AD_TYPE_NAME_CMPL, &len);
-    if (name == NULL || len == 0) {
-        name = esp_ble_resolve_adv_data(adv, ESP_BLE_AD_TYPE_NAME_SHORT, &len);
+/* Return true if the scan result's name matches TRG_DEVICE_NAME. The TRIGGER
+ * box advertises its complete local name in the SCAN RESPONSE, not the primary
+ * ADV packet, so a manual walk of `ble_adv[0..adv_data_len]` misses it. The
+ * stack's esp_ble_resolve_adv_data walks the concatenated adv + scan-response
+ * TLV buffer and finds the name wherever it lives. */
+static bool adv_name_matches(uint8_t *ble_adv) {
+    if (ble_adv == NULL) return false;
+    uint8_t name_len = 0;
+    uint8_t *name = esp_ble_resolve_adv_data(ble_adv, ESP_BLE_AD_TYPE_NAME_CMPL, &name_len);
+    if (name == NULL || name_len == 0) {
+        name = esp_ble_resolve_adv_data(ble_adv, ESP_BLE_AD_TYPE_NAME_SHORT, &name_len);
     }
-    if (name == NULL || len == 0) return false;
-    return len == want && memcmp(name, TRG_DEVICE_NAME, want) == 0;
-}
-
-/* Write one 8-byte frame to 0xFFF6. WRITE_NO_RSP is required — the box
- * rejects WRITE_RSP (ATT 0x03). Returns ESP_OK on success. */
-static esp_err_t write_frame(const uint8_t *frame) {
-    if (!s_ble.connected || s_ble.write_handle == TRG_INVALID_HANDLE) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    return esp_ble_gattc_write_char(s_ble.gattc_if, s_ble.conn_id,
-                                    s_ble.write_handle,
-                                    TRG_FRAME_LEN, (uint8_t *)frame,
-                                    ESP_GATT_WRITE_TYPE_NO_RSP,
-                                    ESP_GATT_AUTH_REQ_NONE);
+    if (name == NULL || name_len == 0) return false;
+    size_t want = strlen(TRG_DEVICE_NAME);
+    return name_len == want && memcmp(name, TRG_DEVICE_NAME, want) == 0;
 }
 
 /* Send one keepalive frame. Called from the keepalive task at 200 ms cadence
- * while connected. */
+ * while connected. WRITE_NO_RSP is required — the box rejects WRITE_RSP. */
 static void send_keepalive(void) {
+    if (!s_ble.connected || s_ble.write_handle == TRG_INVALID_HANDLE) return;
     uint8_t frame[TRG_FRAME_LEN];
     trigger_proto_build_keepalive(frame, TRIGGER_DEVICE_ID, TRIGGER_PASSWORD);
-    esp_err_t r = write_frame(frame);
-    if (r != ESP_OK && r != ESP_ERR_INVALID_STATE) {
+    esp_err_t r = esp_ble_gattc_write_char(s_ble.gattc_if, s_ble.conn_id,
+                                           s_ble.write_handle,
+                                           sizeof(frame), frame,
+                                           ESP_GATT_WRITE_TYPE_NO_RSP,
+                                           ESP_GATT_AUTH_REQ_NONE);
+    if (r != ESP_OK) {
         ESP_LOGW(TAG, "keepalive write failed: %s", esp_err_to_name(r));
     }
-}
-
-/* ─────────────────────────── public command API ────────────────────────── */
-
-bool trigger_ble_is_linked(void) {
-    return s_ble.connected && s_ble.write_handle != TRG_INVALID_HANDLE;
-}
-
-/* The verified ESPHome bridge sends each command twice with a short gap to
- * punch through a briefly-stale session; we do the same. */
-void trigger_ble_send_action(trg_channel_t ch, trg_action_t act) {
-    uint8_t frame[TRG_FRAME_LEN];
-    trigger_proto_build_action(frame, TRIGGER_DEVICE_ID, TRIGGER_PASSWORD, ch, act);
-    if (write_frame(frame) != ESP_OK) return;
-    ESP_LOGI(TAG, "action ch=%d act=%d -> %02X", (int)ch, (int)act, frame[4]);
-    vTaskDelay(pdMS_TO_TICKS(40));
-    write_frame(frame);
-}
-
-void trigger_ble_send_dim(uint8_t ui_level) {
-    uint8_t frame[TRG_FRAME_LEN];
-    trigger_proto_build_dim(frame, TRIGGER_DEVICE_ID, TRIGGER_PASSWORD, ui_level);
-    if (write_frame(frame) != ESP_OK) return;
-    ESP_LOGI(TAG, "dim ui=%u -> wire %02X", (unsigned)ui_level, frame[4]);
-    vTaskDelay(pdMS_TO_TICKS(40));
-    write_frame(frame);
-    trigger_state_set_dim(ui_level);
 }
 
 static void keepalive_task(void *arg) {
@@ -297,6 +262,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     switch (event) {
     case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
         if (p->scan_param_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            /* IDF 5.4 renamed start_scan -> start_scanning. duration=0 = forever. */
             esp_ble_gap_start_scanning(0);
         }
         break;
@@ -372,15 +338,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event,
         }
         break;
 
-    case ESP_GATTC_WRITE_DESCR_EVT:
-        ESP_LOGI(TAG, "CCCD write result: status=%d handle=0x%04X",
-                 p->write.status, p->write.handle);
-        break;
-
     case ESP_GATTC_NOTIFY_EVT: {
-        ESP_LOGD(TAG, "NOTIFY_EVT handle=0x%04X (want 0x%04X) len=%d is_notify=%d",
-                 p->notify.handle, s_ble.notify_handle,
-                 p->notify.value_len, p->notify.is_notify);
         if (p->notify.handle != s_ble.notify_handle) break;
         trg_state_t st;
         trigger_proto_parse_state(p->notify.value, p->notify.value_len, &st);
@@ -418,6 +376,48 @@ static void gattc_event_handler(esp_gattc_cb_event_t event,
                                 esp_ble_gattc_cb_param_t *p) {
     /* Single-profile firmware — route everything to the one handler. */
     gattc_profile_event_handler(event, gattc_if, p);
+}
+
+/* ──────────────────────────── command send path ────────────────────────── */
+
+/* Write one TRG_FRAME_LEN frame to the 0xFFF6 write characteristic. The box
+ * only accepts Write Without Response (0x52); WRITE_RSP gets ATT error 0x03. */
+static void write_frame(const uint8_t *frame) {
+    if (!s_ble.connected || s_ble.write_handle == TRG_INVALID_HANDLE) return;
+    esp_err_t r = esp_ble_gattc_write_char(s_ble.gattc_if, s_ble.conn_id,
+                                           s_ble.write_handle,
+                                           TRG_FRAME_LEN, (uint8_t *)frame,
+                                           ESP_GATT_WRITE_TYPE_NO_RSP,
+                                           ESP_GATT_AUTH_REQ_NONE);
+    if (r != ESP_OK) {
+        ESP_LOGW(TAG, "write_frame failed: %s", esp_err_to_name(r));
+    }
+}
+
+bool trigger_ble_is_linked(void) {
+    return s_ble.connected && s_ble.notify_subscribed;
+}
+
+void trigger_ble_send_action(trg_channel_t ch, trg_action_t act) {
+    if (!trigger_ble_is_linked()) return;
+    uint8_t frame[TRG_FRAME_LEN];
+    trigger_proto_build_action(frame, TRIGGER_DEVICE_ID, TRIGGER_PASSWORD, ch, act);
+    /* Mirror the phone app / ESPHome bridge: send the payload twice with a
+     * short gap. A single WRITE_NO_RSP is occasionally dropped by the box's
+     * GATT server under keepalive contention. */
+    write_frame(frame);
+    vTaskDelay(pdMS_TO_TICKS(30));
+    write_frame(frame);
+}
+
+void trigger_ble_send_dim(uint8_t ui_level) {
+    if (!trigger_ble_is_linked()) return;
+    uint8_t frame[TRG_FRAME_LEN];
+    trigger_proto_build_dim(frame, TRIGGER_DEVICE_ID, TRIGGER_PASSWORD, ui_level);
+    write_frame(frame);
+    vTaskDelay(pdMS_TO_TICKS(30));
+    write_frame(frame);
+    trigger_state_set_dim(ui_level);
 }
 
 /* ─────────────────────────────────── init ──────────────────────────────── */

@@ -147,8 +147,8 @@ Three separate defects, all fixed 2026-05-29:
 4. **Wrong PIN → silently ignored.** `secrets.h` shipped with a placeholder
    password. With the wrong password the box accepts the GATT connection but
    ignores all commands and sends no state notifications — looks identical to a
-   protocol bug. Fixed by reading the real PIN (`0x04D2` = 1234) out of the
-   phone's keepalive frame in `../triggersniff_dim_blink_v2.pcap`.
+   protocol bug. Fixed by reading the real PIN out of the phone's keepalive
+   frame (the `…DE <pwd_hi> <pwd_lo>` bytes) and setting it in `secrets.h`.
 5. **State parser rejected live frames.** The parser required notification byte
    3 to equal `0x62`, but on real hardware byte 3 varies (`0x62` and `0x5D`
    seen); byte 4 is the device id. Relaxed to validate only the `6E 00` header.

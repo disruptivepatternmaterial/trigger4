@@ -12,27 +12,27 @@
  *   - Push parsed notifications into trigger_state_*.
  *   - Re-discover and reconnect on drop.
  *
- * Local control: trigger_ble_send_action / trigger_ble_send_dim build a frame
- * via trigger_proto and write it to 0xFFF6 (WRITE_NO_RSP). Both are no-ops
- * when the link is down, and are safe to call from the main loop.
+ * Also drives the relay: the single AtomS3 button maps to action/dim frames
+ * sent on the 0xFFF6 write characteristic (see trigger_ble_send_*).
  */
 
 #ifndef TRIGGER_BLE_H
 #define TRIGGER_BLE_H
 
+#include <stdbool.h>
 #include "esp_err.h"
 #include "trigger_proto.h"
 
 esp_err_t trigger_ble_init(void);
 
-/* True once connected + write handle resolved (commands will actually go out). */
+/* True once connected AND notifications are subscribed (full link up). */
 bool trigger_ble_is_linked(void);
 
-/* Send one channel action (ON/OFF/BLINK/STEADY). No-op if not linked. */
+/* Send an ON/OFF/BLINK/STEADY action to one channel. No-op if not linked. */
 void trigger_ble_send_action(trg_channel_t ch, trg_action_t act);
 
-/* Set the shared dim register. ui_level 0..255, 255 = brightest. No-op if
- * not linked. Also records the level in trigger_state for the UI. */
+/* Set the shared dim register (ui_level 0..255, 255 = brightest) and record
+ * the commanded level in trigger_state. No-op if not linked. */
 void trigger_ble_send_dim(uint8_t ui_level);
 
 #endif /* TRIGGER_BLE_H */

@@ -11,6 +11,7 @@
 #include "trigger_ble.h"
 #include "trigger_proto.h"
 #include "trigger_ui.h"
+#include "logo_bitmap.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -119,16 +120,11 @@ static void run_selftest_once(void) {
 }
 #endif
 
-/* The box does not stream state notifications for BLE-commanded changes, so
- * mirror the commanded state into the UI model. ch2/ch3 are the two driven
- * channels (passenger/driver); the pills become a command echo. */
+/* Mirror the button's commanded state into the UI model. The main %-fill hero
+ * reads this (the box never echoes dim level); the D/P band stays bound to the
+ * box's real FFF7 feedback so it shows what the hardware actually reports. */
 static void push_optimistic_state(void) {
-    trg_state_t st = {0};
-    st.valid     = true;
-    st.ch2_on    = s_both_on;
-    st.ch3_on    = s_both_on;
-    st.ch2_blink = s_both_on && s_both_blink;
-    trigger_state_set_channels(&st);
+    trigger_state_set_command(s_both_on, s_both_on && s_both_blink);
 }
 
 static void handle_button_event(btn_event_t ev) {
@@ -163,13 +159,17 @@ static void handle_button_event(btn_event_t ev) {
     }
 }
 
+/* Shared boot screen: bäärgsiitsch logo centered up top, product name below.
+ * The DJI remote uses the same layout with "Dash Cam" so the pair matches. */
 static void boot_splash(void) {
-    /* Quick text-based splash so we know the panel is alive before BLE init. */
     atoms3_gfx_clear(M5_COLOR_BLACK);
-    atoms3_gfx_print_centered(28, "TRIGGER",  M5_COLOR_WHITE, 3);
-    atoms3_gfx_print_centered(70, "4 PLUS",   M5_COLOR_GREEN, 3);
-    atoms3_gfx_print_centered(110, "ATOMS3 BOOT", M5_COLOR_GREY, 1);
-    vTaskDelay(pdMS_TO_TICKS(1200));
+    int w  = atoms3_gfx_width();
+    int lx = (w - LOGO_W) / 2;
+    if (lx < 0) lx = 0;
+    int ly = 6;
+    atoms3_gfx_draw_bitmap(lx, ly, LOGO_W, LOGO_H, logo_bitmap, M5_COLOR_WHITE);
+    atoms3_gfx_print_centered(ly + LOGO_H + 10, "Ditch", M5_COLOR_YELLOW, 3);
+    vTaskDelay(pdMS_TO_TICKS(1500));
     atoms3_gfx_clear(M5_COLOR_BLACK);
 }
 

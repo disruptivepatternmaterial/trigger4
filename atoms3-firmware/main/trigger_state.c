@@ -15,6 +15,8 @@ static trg_link_state_t  s_link       = TRG_LINK_BOOT;
 static trg_state_t       s_channels   = { .valid = false };
 static uint16_t          s_dim_level  = 0xFFFF;  /* unknown until first set */
 static uint32_t          s_drop_count = 0;
+static bool              s_cmd_on     = false;   /* commanded output state    */
+static bool              s_cmd_blink  = false;
 
 static void take(void)  { if (s_mtx) xSemaphoreTake(s_mtx, portMAX_DELAY); }
 static void give(void)  { if (s_mtx) xSemaphoreGive(s_mtx); }
@@ -41,6 +43,17 @@ void trigger_state_set_channels(const trg_state_t *st) {
 void trigger_state_get_channels(trg_state_t *out) {
     if (out == NULL) return;
     take(); *out = s_channels; give();
+}
+
+void trigger_state_set_command(bool on, bool blink) {
+    take(); s_cmd_on = on; s_cmd_blink = blink; give();
+}
+
+void trigger_state_get_command(bool *on, bool *blink) {
+    take();
+    if (on)    *on    = s_cmd_on;
+    if (blink) *blink = s_cmd_blink;
+    give();
 }
 
 void trigger_state_set_dim(uint16_t ui_level) {

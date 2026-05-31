@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "fonts/ibmplex_fonts.h"
 
 extern "C" {
 #include "m5atoms3_gfx.h"
@@ -49,20 +50,32 @@ extern "C" void atoms3_gfx_erase_rect(int x,int y,int w,int h)                { 
 extern "C" void atoms3_gfx_draw_xbitmap(int x,int y,int w,int h,const uint8_t *bm,uint16_t c) {
     if (bm) gfx.drawXBitmap(x,y,bm,w,h,c);
 }
+/* MSB-first 1-bpp bitmap (logo_bitmap.h is generated in this order). */
+extern "C" void atoms3_gfx_draw_bitmap(int x,int y,int w,int h,const uint8_t *bm,uint16_t c) {
+    if (bm) gfx.drawBitmap(x,y,bm,w,h,c);
+}
+/* Color PNG decoded at draw time (icons_png.h). */
+extern "C" void atoms3_gfx_draw_png(int x,int y,const uint8_t *data,unsigned len) {
+    if (data && len) gfx.drawPng(data, (uint32_t)len, x, y);
+}
 
 static void atoms3_gfx_pick_font_for_tier(int tier) {
+    gfx.setTextSize(1);
     switch (tier) {
-        case 3: gfx.setFont(&fonts::Font4); gfx.setTextSize(1); break;
-        case 2: gfx.setFont(&fonts::Font2); gfx.setTextSize(2); break;
+        case 3: gfx.setFont(&IBMPlexSans_SemiBold28pt7b); break;
+        case 2: gfx.setFont(&IBMPlexSans_SemiBold18pt7b); break;
         case 1:
-        default: gfx.setFont(&fonts::Font2); gfx.setTextSize(1); break;
+        default: gfx.setFont(&IBMPlexSans_Medium9pt7b); break;
     }
 }
 
+/* Transparent background: the UI repaints each region (bands / main) before
+ * drawing text, so GFX-font glyphs must not stamp an opaque box over the
+ * yellow fill or band color. */
 extern "C" void atoms3_gfx_print(int x,int y,const char *t,uint16_t c,int tier) {
     if (!t) return;
     atoms3_gfx_pick_font_for_tier(tier);
-    gfx.setTextColor(c, TFT_BLACK);
+    gfx.setTextColor(c);
     gfx.setTextDatum(top_left);
     gfx.drawString(t, x, y);
 }
@@ -70,9 +83,18 @@ extern "C" void atoms3_gfx_print(int x,int y,const char *t,uint16_t c,int tier) 
 extern "C" void atoms3_gfx_print_centered(int y,const char *t,uint16_t c,int tier) {
     if (!t) return;
     atoms3_gfx_pick_font_for_tier(tier);
-    gfx.setTextColor(c, TFT_BLACK);
+    gfx.setTextColor(c);
     gfx.setTextDatum(top_center);
     gfx.drawString(t, gfx.width()/2, y);
+}
+
+/* Horizontally centered on an arbitrary x (used for the D/P band cells). */
+extern "C" void atoms3_gfx_print_centered_at(int cx,int y,const char *t,uint16_t c,int tier) {
+    if (!t) return;
+    atoms3_gfx_pick_font_for_tier(tier);
+    gfx.setTextColor(c);
+    gfx.setTextDatum(top_center);
+    gfx.drawString(t, cx, y);
 }
 
 extern "C" int atoms3_gfx_tier_pixel_height(int tier) {

@@ -1,25 +1,21 @@
 /*
- * trigger4p AtomS3 status display — M5GFX-based, diff-based partial repaints
- * so the screen does not flicker on every tick.
+ * trigger4p AtomS3 "Ditch LEDs" UI — M5GFX, diff-based partial repaints.
  *
- * Layout (128x128 panel, rotation=2):
+ * Layout (128x128 panel, rotation=2), shared visual frame with the DJI remote:
  *
  *   +----------------------+
- *   |TRG          [conn]   |   tier 1, tag + colored conn dot
- *   |                      |
- *   |     LINKED           |   tier 3, hero state word
- *   |                      |
- *   | C1[ON ] C2[OFF]      |   tier 1, 2x2 grid of channel pills
- *   | C3[OFF] C4[BLK]      |
- *   |                      |
- *   | DIM 204    DROPS 0   |   tier 1, diagnostic line
- *   +----------------------+
+ *   | DITCH         [link] |  TOP BAND: title + 🔗 icon when linked (red dot on
+ *   |                      |           loss; clear while scanning).
+ *   |        60%           |  MAIN: when linked, yellow fill rises bottom->top
+ *   |######################|        with the commanded dim level ("OFF!" red when
+ *   |######################|        off, fill flashes while blink mode is on).
+ *   +----------------------+        While not linked, a blinking 📡 dish shows.
+ *   |    D          P      |  BOTTOM BAND: driver / passenger letters driven by
+ *   +----------------------+               the box's real FFF7 feedback.
  *
- * Color rules:
- *   ON      → green
- *   OFF     → grey
- *   BLINK   → yellow
- *   LINK_LINKED → green hero, LOST/CONNECTING → yellow, BOOT/SCAN → grey
+ * Truthfulness: the % fill is the level we COMMAND (the box never echoes dim).
+ * The D/P dots reflect the box's reported channel state only (ch3=driver,
+ * ch2=passenger), never the optimistic command.
  */
 
 #ifdef M5ATOMS3
@@ -28,169 +24,216 @@
 #include "trigger_state.h"
 #include "m5atoms3_hal.h"
 #include "m5atoms3_gfx.h"
+#include "icons_png.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#define MARGIN_X        4
-#define LABEL_Y         2
-#define CONN_DOT_X      (128 - 12)
-#define CONN_DOT_Y      4
-#define CONN_DOT_R      4
-#define HERO_Y          26
-#define PILL_ROW_Y0     70
-#define PILL_ROW_Y1     90
-#define PILL_W          56
-#define PILL_H          16
-#define DIAG_Y          110
+#define SCREEN_W        128
+#define SCREEN_H        128
+#define TOP_BAND_H      20
+#define BOT_BAND_H      30
+#define MAIN_TOP        (TOP_BAND_H + 1)
+#define MAIN_BOT        (SCREEN_H - BOT_BAND_H - 1)
+#define MAIN_H          (MAIN_BOT - MAIN_TOP)
+
+#define CONN_DOT_R      5
+#define CONN_DOT_CX     (SCREEN_W - 11)
+#define CONN_DOT_CY     (TOP_BAND_H / 2)
+
+#define ICON_LINK_W     16            /* icon_link_png is 16x16 */
+#define ICON_SAT_W      64            /* icon_sat_png  is 64x64 */
+
+#define BAND_BG         M5_COLOR_DARKGREY
+#define BLINK_PERIOD_TICKS 3   /* UI ticks (~150 ms each) per blink half-cycle */
 
 typedef struct {
-    bool      drawn_chrome;
-    int       last_link;
-    char      hero[16];
-    uint16_t  hero_color;
-    bool      ch_on[4];
-    bool      ch_blink[4];   /* blink only meaningful for ch1/ch2 */
-    uint16_t  dim;
-    uint32_t  drops;
+    bool     chrome_drawn;
+    int      last_link;
+    int      last_pct;        /* -1 = unknown */
+    bool     last_on;
+    bool     last_blink;
+    bool     last_blink_visible;
+    bool     last_d_on;
+    bool     last_p_on;
+    bool     last_fb_valid;
 } ui_cache_t;
 
 static ui_cache_t s_cache;
+static uint32_t   s_tick;
 
-static const char *link_word(int s) {
-    switch (s) {
-    case TRG_LINK_BOOT:       return "BOOT";
-    case TRG_LINK_DISCOVERY:  return "SCANNING";
-    case TRG_LINK_CONNECTING: return "CONNECTING";
-    case TRG_LINK_LINKED:     return "LINKED";
-    case TRG_LINK_LOST:       return "LOST";
-    default:                  return "?";
+/* Top-right connectivity indicator: linked shows the 🔗 link icon; lost shows
+ * a red dot; while scanning/connecting the main area carries the blinking 📡
+ * dish, so the top cell stays clear. */
+static void draw_top_indicator(int link) {
+    atoms3_gfx_fill_rect(SCREEN_W - 20, 0, 20, TOP_BAND_H, BAND_BG);
+    if (link == TRG_LINK_LINKED) {
+        atoms3_gfx_draw_png(SCREEN_W - ICON_LINK_W - 2, (TOP_BAND_H - ICON_LINK_W) / 2,
+                            icon_link_png, icon_link_png_len);
+    } else if (link == TRG_LINK_LOST) {
+        atoms3_gfx_fill_circle(CONN_DOT_CX, CONN_DOT_CY, CONN_DOT_R, M5_COLOR_RED);
     }
 }
 
-static uint16_t link_color(int s) {
-    switch (s) {
-    case TRG_LINK_LINKED:     return M5_COLOR_GREEN;
-    case TRG_LINK_CONNECTING: return M5_COLOR_YELLOW;
-    case TRG_LINK_LOST:       return M5_COLOR_ORANGE;
-    case TRG_LINK_DISCOVERY:  return M5_COLOR_YELLOW;
-    case TRG_LINK_BOOT:
-    default:                  return M5_COLOR_GREY;
+/* Map commanded dim (0..255, 0xFFFF=unknown) to 0..100 %. */
+static int dim_to_pct(uint16_t dim) {
+    if (dim == 0xFFFF) return 100;          /* on but level not yet sent */
+    if (dim > 255) dim = 255;
+    return (int)((dim * 100 + 127) / 255);
+}
+
+static void draw_top_band(int link) {
+    atoms3_gfx_fill_rect(0, 0, SCREEN_W, TOP_BAND_H, BAND_BG);
+    atoms3_gfx_print(4, 2, "DITCH", M5_COLOR_WHITE, 1);   /* small label tier */
+    draw_top_indicator(link);
+}
+
+static void clear_main(void) {
+    atoms3_gfx_fill_rect(0, MAIN_TOP, SCREEN_W, MAIN_H + 1, M5_COLOR_BLACK);
+}
+
+/* Draw the main hero: scanning dish, OFF, or the yellow level fill. */
+static void draw_main(int link, bool on, bool blink, int pct, bool blink_visible) {
+    if (link != TRG_LINK_LINKED) {
+        /* Blink the dish by only touching its 64x64 box (no full-main clear, so
+         * the panel doesn't flash): draw on the visible phase, paint the box
+         * black on the off phase. The full main was cleared on link change. */
+        int ix = (SCREEN_W - ICON_SAT_W) / 2;
+        int iy = MAIN_TOP + (MAIN_H - ICON_SAT_W) / 2;
+        if (blink_visible) {
+            atoms3_gfx_draw_png(ix, iy, icon_sat_png, icon_sat_png_len);
+        } else {
+            atoms3_gfx_fill_rect(ix, iy, ICON_SAT_W, ICON_SAT_W, M5_COLOR_BLACK);
+        }
+        return;
+    }
+
+    clear_main();
+
+    if (!on) {
+        atoms3_gfx_print_centered(MAIN_TOP + MAIN_H / 2 - 16, "OFF!", M5_COLOR_RED, 3);
+        return;
+    }
+
+    /* Yellow fill from the bottom up. When blinking, the fill disappears on
+     * the off phase so the panel visibly flashes (we can dim a blink). */
+    if (!blink || blink_visible) {
+        int fill_h = (MAIN_H * pct) / 100;
+        if (fill_h < 0) fill_h = 0;
+        if (fill_h > MAIN_H) fill_h = MAIN_H;
+        if (fill_h > 0) {
+            atoms3_gfx_fill_rect(0, MAIN_BOT - fill_h, SCREEN_W, fill_h, M5_COLOR_YELLOW);
+        }
+    }
+
+    char pctbuf[8];
+    snprintf(pctbuf, sizeof(pctbuf), "%d%%", pct);
+    /* percent sits near the top of the main area; black on yellow if the fill
+     * has reached it, white on black otherwise. */
+    int text_y = MAIN_TOP + 6;
+    int fill_top = MAIN_BOT - (MAIN_H * pct) / 100;
+    bool over_fill = (!blink || blink_visible) && (text_y + 20 >= fill_top);
+    uint16_t pct_color = over_fill ? M5_COLOR_BLACK : M5_COLOR_WHITE;
+    atoms3_gfx_print_centered(text_y, pctbuf, pct_color, 3);
+
+    if (blink) {
+        atoms3_gfx_print_centered(MAIN_BOT - 16, "BLINK",
+                                  blink_visible ? M5_COLOR_BLACK : M5_COLOR_YELLOW, 1);
     }
 }
 
-static uint16_t conn_dot_color(int s) {
-    switch (s) {
-    case TRG_LINK_LINKED:     return M5_COLOR_GREEN;
-    case TRG_LINK_CONNECTING: return M5_COLOR_YELLOW;
-    case TRG_LINK_DISCOVERY:  return M5_COLOR_YELLOW;
-    case TRG_LINK_LOST:       return M5_COLOR_ORANGE;
-    default:                  return M5_COLOR_DARKGREY;
+/* Bottom band: D (driver=ch3) and P (passenger=ch2) reflect REAL feedback.
+ * Each half is a colored swatch with a black letter so it's readable:
+ *   channel ON     -> yellow cell  (black D/P pops)
+ *   channel OFF    -> light grey cell (black D/P still readable)
+ *   no feedback yet-> dark band cell, dim grey letter (looks inactive)
+ */
+#define DP_OFF_BG    0x9CD3   /* light grey cell when channel is off */
+
+static void draw_bottom_band(bool fb_valid, bool d_on, bool p_on) {
+    int y0 = SCREEN_H - BOT_BAND_H;
+    int halfw = SCREEN_W / 2;
+    int h = atoms3_gfx_tier_pixel_height(2);
+    int ty = y0 + (BOT_BAND_H - h) / 2 + 1;   /* nudged down 1px */
+
+    struct { const char *lbl; bool on; int x0; int w; int cx; } cells[2] = {
+        { "D", d_on, 0,          halfw,            SCREEN_W / 4 },
+        { "P", p_on, halfw + 1,  SCREEN_W - halfw - 1, (SCREEN_W * 3) / 4 },
+    };
+    for (int i = 0; i < 2; i++) {
+        uint16_t bg = !fb_valid ? BAND_BG : (cells[i].on ? M5_COLOR_YELLOW : DP_OFF_BG);
+        uint16_t fg = !fb_valid ? M5_COLOR_GREY : M5_COLOR_BLACK;
+        atoms3_gfx_fill_rect(cells[i].x0, y0, cells[i].w, BOT_BAND_H, bg);
+        atoms3_gfx_print_centered_at(cells[i].cx, ty, cells[i].lbl, fg, 2);
     }
-}
-
-static void draw_pill(int x, int y, const char *ch_label, bool on, bool blink) {
-    /* Pill background = state color, label = "C1 ON" / "C1 OFF" / "C1 BLK". */
-    uint16_t bg = blink ? M5_COLOR_YELLOW : (on ? M5_COLOR_GREEN : M5_COLOR_DARKGREY);
-    uint16_t fg = (bg == M5_COLOR_GREEN || bg == M5_COLOR_DARKGREY) ? M5_COLOR_WHITE
-                                                                    : M5_COLOR_BLACK;
-    atoms3_gfx_fill_rect(x, y, PILL_W, PILL_H, bg);
-
-    char buf[10];
-    const char *state = blink ? "BLK" : (on ? "ON" : "OFF");
-    snprintf(buf, sizeof(buf), "%s %s", ch_label, state);
-
-    /* Center the text within the pill. We use the small tier-1 font so it
-     * fits 56 px wide at scale 1. */
-    atoms3_gfx_print(x + 4, y + 1, buf, fg, 1);
+    /* 1px black seam between the two halves */
+    atoms3_gfx_fill_rect(halfw, y0, 1, BOT_BAND_H, M5_COLOR_BLACK);
 }
 
 void trigger_ui_init(void) {
     memset(&s_cache, 0, sizeof(s_cache));
-    s_cache.drawn_chrome = false;
+    s_cache.chrome_drawn = false;
     s_cache.last_link    = -1;
-    s_cache.dim          = 0xFFFE; /* force first paint */
-    s_cache.drops        = 0xFFFFFFFFu;
+    s_cache.last_pct     = -2;
+    s_tick               = 0;
 }
 
 void trigger_ui_tick(void) {
-    if (!s_cache.drawn_chrome) {
+    s_tick++;
+
+    int  link = (int)trigger_state_get_link();
+    bool cmd_on = false, cmd_blink = false;
+    trigger_state_get_command(&cmd_on, &cmd_blink);
+    int  pct = dim_to_pct(trigger_state_get_dim());
+
+    trg_state_t fb;
+    trigger_state_get_channels(&fb);
+    bool fb_valid = fb.valid;
+    bool d_on = fb.valid && fb.ch3_on;   /* driver    = APK ch3 */
+    bool p_on = fb.valid && fb.ch2_on;   /* passenger = APK ch2 */
+
+    bool blink_visible = ((s_tick / BLINK_PERIOD_TICKS) & 1u) == 0u;
+    bool not_linked = (link != TRG_LINK_LINKED);
+
+    if (!s_cache.chrome_drawn) {
         atoms3_gfx_clear(M5_COLOR_BLACK);
-        atoms3_gfx_print(MARGIN_X, LABEL_Y, "TRG", M5_COLOR_WHITE, 1);
-        s_cache.drawn_chrome = true;
-        s_cache.last_link    = -1; /* force everything else to repaint */
-        s_cache.hero[0]      = '\0';
-        s_cache.hero_color   = 0;
-        for (int i = 0; i < 4; i++) { s_cache.ch_on[i] = false; s_cache.ch_blink[i] = false; }
-        s_cache.dim          = 0xFFFE;
-        s_cache.drops        = 0xFFFFFFFFu;
+        draw_top_band(link);
+        s_cache.chrome_drawn   = true;
+        s_cache.last_link      = link;
+        s_cache.last_pct       = -2;        /* force main + band repaint below */
+        s_cache.last_d_on      = !d_on;
+        s_cache.last_p_on      = !p_on;
+        s_cache.last_fb_valid  = !fb_valid;
     }
 
-    int link = (int)trigger_state_get_link();
     if (link != s_cache.last_link) {
-        /* Conn dot. */
-        atoms3_gfx_erase_rect(CONN_DOT_X - CONN_DOT_R - 1,
-                              CONN_DOT_Y - CONN_DOT_R - 1,
-                              CONN_DOT_R * 2 + 3,
-                              CONN_DOT_R * 2 + 3);
-        atoms3_gfx_fill_circle(CONN_DOT_X, CONN_DOT_Y + CONN_DOT_R,
-                               CONN_DOT_R, conn_dot_color(link));
+        draw_top_indicator(link);
+        clear_main();                     /* wipe stale hero before the new state */
         s_cache.last_link = link;
-
-        /* Hero state word. */
-        const char *word = link_word(link);
-        uint16_t    color = link_color(link);
-        if (strcmp(word, s_cache.hero) != 0 || color != s_cache.hero_color) {
-            atoms3_gfx_erase_rect(0, HERO_Y, atoms3_gfx_width(),
-                                  atoms3_gfx_tier_pixel_height(3) + 2);
-            atoms3_gfx_print_centered(HERO_Y, word, color, 3);
-            strncpy(s_cache.hero, word, sizeof(s_cache.hero) - 1);
-            s_cache.hero[sizeof(s_cache.hero) - 1] = '\0';
-            s_cache.hero_color = color;
-        }
+        s_cache.last_pct  = -2;           /* link change repaints the hero */
     }
 
-    /* Channel pills (2x2). Pull current channel state. */
-    trg_state_t chs;
-    trigger_state_get_channels(&chs);
-    bool on[4]    = { chs.ch1_on,    chs.ch2_on,    chs.ch3_on, chs.ch4_on };
-    bool blink[4] = { chs.ch1_blink, chs.ch2_blink, false,      false      };
-    /* If we have not received any notifications yet (chs.valid=false), show
-     * all channels as OFF/grey rather than UNKNOWN — keeps the layout stable
-     * during the boot → linked transition. */
+    bool main_changed =
+        pct != s_cache.last_pct ||
+        cmd_on != s_cache.last_on ||
+        cmd_blink != s_cache.last_blink ||
+        (cmd_on && cmd_blink && blink_visible != s_cache.last_blink_visible) ||
+        (not_linked && blink_visible != s_cache.last_blink_visible);
 
-    /* Pill positions: left column x = MARGIN_X, right column x = pill+gap. */
-    int x_left  = MARGIN_X;
-    int x_right = MARGIN_X + PILL_W + 4;
-    int positions_x[4] = { x_left, x_right, x_left,    x_right };
-    int positions_y[4] = { PILL_ROW_Y0, PILL_ROW_Y0, PILL_ROW_Y1, PILL_ROW_Y1 };
-    static const char *labels[4] = { "C1", "C2", "C3", "C4" };
-
-    for (int i = 0; i < 4; i++) {
-        if (on[i] != s_cache.ch_on[i] || blink[i] != s_cache.ch_blink[i] || !s_cache.drawn_chrome) {
-            draw_pill(positions_x[i], positions_y[i], labels[i], on[i], blink[i]);
-            s_cache.ch_on[i]    = on[i];
-            s_cache.ch_blink[i] = blink[i];
-        }
+    if (main_changed) {
+        draw_main(link, cmd_on, cmd_blink, pct, blink_visible);
+        s_cache.last_pct           = pct;
+        s_cache.last_on            = cmd_on;
+        s_cache.last_blink         = cmd_blink;
+        s_cache.last_blink_visible = blink_visible;
     }
 
-    /* Diagnostic line: dim + drops. */
-    uint16_t dim   = trigger_state_get_dim();
-    uint32_t drops = trigger_state_get_drops();
-    if (dim != s_cache.dim || drops != s_cache.drops) {
-        atoms3_gfx_erase_rect(0, DIAG_Y, atoms3_gfx_width(),
-                              atoms3_gfx_tier_pixel_height(1) + 2);
-        char buf[40];
-        if (dim == 0xFFFF) {
-            snprintf(buf, sizeof(buf), "DIM --   DROPS %lu",
-                     (unsigned long)drops);
-        } else {
-            snprintf(buf, sizeof(buf), "DIM %3u  DROPS %lu",
-                     (unsigned)(dim & 0xFF), (unsigned long)drops);
-        }
-        atoms3_gfx_print(MARGIN_X, DIAG_Y, buf, M5_COLOR_GREY, 1);
-        s_cache.dim   = dim;
-        s_cache.drops = drops;
+    if (d_on != s_cache.last_d_on || p_on != s_cache.last_p_on ||
+        fb_valid != s_cache.last_fb_valid) {
+        draw_bottom_band(fb_valid, d_on, p_on);
+        s_cache.last_d_on     = d_on;
+        s_cache.last_p_on     = p_on;
+        s_cache.last_fb_valid = fb_valid;
     }
 }
 
