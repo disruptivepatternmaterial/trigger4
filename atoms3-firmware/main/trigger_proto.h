@@ -65,7 +65,7 @@ void trigger_proto_build_dim(uint8_t *out, uint8_t device_id, uint16_t password,
  * Required every ~200 ms while connected. */
 void trigger_proto_build_keepalive(uint8_t *out, uint8_t device_id, uint16_t password);
 
-/* Decoded state from a 5-byte FFF7 notification (`6E 00 <state> 62 44`). */
+/* Decoded state from a 5-byte FFF7 notification (`6E 00 <state> <variant> 44`). */
 typedef struct {
     bool ch1_on;       /* APK Ch1 — bit 2 (0x04) historical "SW1" */
     bool ch2_on;       /* APK Ch2 — bit 3 (0x08) historical "SW2" */

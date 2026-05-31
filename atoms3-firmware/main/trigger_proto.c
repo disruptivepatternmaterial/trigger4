@@ -74,8 +74,15 @@ void trigger_proto_parse_state(const uint8_t *frame, size_t frame_len, trg_state
         out->valid = false;
         return;
     }
-    /* Expected: 6E 00 <state> 62 44 */
-    if (frame[0] != 0x6E || frame[1] != 0x00 || frame[3] != 0x62 || frame[4] != 0x44) {
+    /* Expected shape: 6E 00 <state> <variant> 44.
+     *
+     * Captures from the real box have shown byte 3 is not a stable sentinel
+     * (for example 0x62 and 0x5D both appear), while byte 2 remains the state
+     * bitfield and byte 4 remains the device family marker. Do not reject the
+     * feedback frame solely because byte 3 varies; that makes the D/P feedback
+     * band go invalid or stale even though the channel bitfield is present.
+     */
+    if (frame[0] != 0x6E || frame[1] != 0x00 || frame[4] != 0x44) {
         out->valid = false;
         out->raw_state = (frame_len >= 3) ? frame[2] : 0;
         return;

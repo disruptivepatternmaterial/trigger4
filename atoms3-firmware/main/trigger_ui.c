@@ -6,7 +6,7 @@
  *   +----------------------+
  *   | DITCH         [link] |  TOP BAND: title + 🔗 icon when linked (red dot on
  *   |                      |           loss; clear while scanning).
- *   |        60%           |  MAIN: when linked, yellow fill rises bottom->top
+ *   |######################|  MAIN: when linked, yellow fill rises bottom->top
  *   |######################|        with the commanded dim level ("OFF!" red when
  *   |######################|        off, fill flashes while blink mode is on).
  *   +----------------------+        While not linked, a blinking 📡 dish shows.
@@ -125,16 +125,6 @@ static void draw_main(int link, bool on, bool blink, int pct, bool blink_visible
             atoms3_gfx_fill_rect(0, MAIN_BOT - fill_h, SCREEN_W, fill_h, M5_COLOR_YELLOW);
         }
     }
-
-    char pctbuf[8];
-    snprintf(pctbuf, sizeof(pctbuf), "%d%%", pct);
-    /* percent sits near the top of the main area; black on yellow if the fill
-     * has reached it, white on black otherwise. */
-    int text_y = MAIN_TOP + 6;
-    int fill_top = MAIN_BOT - (MAIN_H * pct) / 100;
-    bool over_fill = (!blink || blink_visible) && (text_y + 20 >= fill_top);
-    uint16_t pct_color = over_fill ? M5_COLOR_BLACK : M5_COLOR_WHITE;
-    atoms3_gfx_print_centered(text_y, pctbuf, pct_color, 3);
 
     if (blink) {
         atoms3_gfx_print_centered(MAIN_BOT - 16, "BLINK",
