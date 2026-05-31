@@ -276,35 +276,50 @@ sending `0x2B` first** — confirmed by Mac replay.
 ### Status notifications on `0xFFF7`
 
 After every write to `0xFFF6` the box notifies on `0xFFF7` with a 5-byte
-payload:
+payload. Byte 2 is the state bitmap; byte 3 is a variant/status byte and has
+been observed as `0x62`, `0x5D`, and `0x42`; byte 4 is the observed device ID
+(`0x44` in bundled captures).
 
 ```
-6E 00 <state_byte> 62 44
+6E 00 <state_byte> <variant> <device_id>
 ```
 
-The state byte is a bitmap of currently-active channels and blink modes:
+The state byte is a bitmap of currently-active channels and blink modes. The
+state bits follow the historical `sw1`/`sw2` naming used by
+`test_trigger_from_mac.py`, where `sw1` is APK Ch2/passenger and `sw2` is APK
+Ch3/driver.
 
 | Bit | Mask | Meaning |
 |-----|------|---------|
-| 2 | `0x04` | SW1 ON |
-| 3 | `0x08` | SW2 ON |
-| 4 | `0x10` | SW3 ON (inferred) |
-| 5 | `0x20` | SW4 ON (inferred) |
-| 6 | `0x40` | SW1 BLINK active |
-| 7 | `0x80` | SW2 BLINK active |
+| 2 | `0x04` | `sw1` / APK Ch2 / passenger ON |
+| 3 | `0x08` | `sw2` / APK Ch3 / driver ON |
+| 4 | `0x10` | `sw3` / APK Ch4 ON (inferred) |
+| 5 | `0x20` | `sw4` / APK Ch1 ON (inferred) |
+| 6 | `0x40` | `sw1` / APK Ch2 / passenger BLINK active |
+| 7 | `0x80` | `sw2` / APK Ch3 / driver BLINK active |
+
+For the AtomS3 D/P UI, this means **P must read real FFF7 bit `0x04`**
+(`ch2_on`) and **D must read real FFF7 bit `0x08`** (`ch3_on`). Do not drive
+the D/P band from commanded or optimistic state.
 
 Verified examples (PIN bytes redacted as `XX XX`):
 
 | Sequence | Notify | State byte breakdown |
 |----------|--------|----------------------|
-| SW1 ON | `6e 00 04 62 44` | `0x04` = SW1 |
-| SW1 ON, SW2 ON | `6e 00 0c 62 44` | `0x0C` = SW1 + SW2 |
-| SW1 ON, SW2 ON, SW1 blink | `6e 00 4c 62 44` | `0x4C` = SW1 + SW2 + SW1-blink |
-| SW2 ON, SW2 blink | `6e 00 88 62 44` | `0x88` = SW2 + SW2-blink |
+| `sw1` / passenger ON (`EE`) | `6e 00 04 62 44` | `0x04` = passenger |
+| `sw2` / driver ON (`F2`) | `6e 00 08 62 44` | `0x08` = driver |
+| passenger + driver ON | `6e 00 0c 62 44` | `0x0C` = passenger + driver |
+| passenger ON + passenger blink (`F0`) | `6e 00 44 62 44` | `0x44` = passenger + passenger-blink |
+| passenger + driver ON + passenger blink | `6e 00 4c 62 44` | `0x4C` = passenger + driver + passenger-blink |
+| driver ON + driver blink | `6e 00 88 62 44` | `0x88` = driver + driver-blink |
 | all off | `6e 00 00 62 44` | `0x00` |
 
-Bytes 0, 1, 3, 4 are constants in the captured data and have not been
-decoded beyond "header / footer".
+Evidence sources: `triggersniff_phone_v2.pcap`,
+`triggersniff_dim_blink.pcap`, `triggersniff_dim_blink_v2.pcap`, plus commit
+`246f9de` (self-test `EE,F2` produced `0x00 → 0x04 → 0x0C`) and commit
+`5ab57df` (blink verification `0xCC → 0x8C → 0x0C → 0x00`). This documents
+firmware/protocol behavior observed in repo history and captures; it is not a
+claim that any current host deployment has been re-tested externally.
 
 ### Reference 8-byte commands (with placeholder PIN bytes)
 

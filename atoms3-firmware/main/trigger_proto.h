@@ -65,14 +65,16 @@ void trigger_proto_build_dim(uint8_t *out, uint8_t device_id, uint16_t password,
  * Required every ~200 ms while connected. */
 void trigger_proto_build_keepalive(uint8_t *out, uint8_t device_id, uint16_t password);
 
-/* Decoded state from a 5-byte FFF7 notification (`6E 00 <state> <variant> 44`). */
+/* Decoded state from a 5-byte FFF7 notification (`6E 00 <state> <variant> <id>`).
+ * The state bits use the app/test-script SW order: SW1 is APK Ch2/passenger,
+ * SW2 is APK Ch3/driver. */
 typedef struct {
-    bool ch1_on;       /* APK Ch1 — bit 2 (0x04) historical "SW1" */
-    bool ch2_on;       /* APK Ch2 — bit 3 (0x08) historical "SW2" */
-    bool ch3_on;       /* APK Ch3 — bit 4 (0x10) inferred         */
-    bool ch4_on;       /* APK Ch4 — bit 5 (0x20) inferred         */
-    bool ch1_blink;    /* bit 6 (0x40) — historical "SW1 blink"   */
-    bool ch2_blink;    /* bit 7 (0x80) — historical "SW2 blink"   */
+    bool ch1_on;       /* APK Ch1 — bit 5 (0x20), inferred SW4 */
+    bool ch2_on;       /* APK Ch2 / passenger — bit 2 (0x04), SW1 */
+    bool ch3_on;       /* APK Ch3 / driver    — bit 3 (0x08), SW2 */
+    bool ch4_on;       /* APK Ch4 — bit 4 (0x10), inferred SW3 */
+    bool ch2_blink;    /* APK Ch2 / passenger blink — bit 6 (0x40), SW1 */
+    bool ch3_blink;    /* APK Ch3 / driver blink    — bit 7 (0x80), SW2 */
     uint8_t raw_state; /* full state byte for unknown-bit display */
     bool valid;        /* false = unparseable / wrong header      */
 } trg_state_t;

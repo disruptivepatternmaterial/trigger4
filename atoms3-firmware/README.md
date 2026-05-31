@@ -65,8 +65,10 @@ Action codes (verified against the official APK + on-wire capture):
 | ch3 driver    | F2   | F3   | F4    | F5     |
 | ch4           | F6   | F7   | F8    | F9     |
 
-State notifications arrive on `0xFFF7` as 5-byte frames `6E 00 <state> 62 44`;
-`trigger_proto_parse_state()` decodes the channel/blink bits.
+State notifications arrive on `0xFFF7` as 5-byte frames
+`6E 00 <state> <variant> <device_id>`; `trigger_proto_parse_state()` decodes
+the channel/blink bits. For the D/P band, use the real FFF7 state byte only:
+passenger/APK Ch2 is bit `0x04`, driver/APK Ch3 is bit `0x08`.
 
 ## Configure
 
@@ -118,7 +120,7 @@ observed, not what the code _should_ do.
 | Boots, inits M5GFX + BLE, starts scanning for `Trigger 4 Plus` | ✅ Verified on hardware (serial log) |
 | Connects, reaches `LINKED`, holds the box with the 200 ms keepalive | ✅ Verified on hardware (2026-05-29, serial: `Found 'Trigger 4 Plus' … connecting` → `write char 0xFFF6 = 0x0035` → `CCCD write result: status=0` → `link is up`). |
 | Commands physically switch the relay | ✅ Verified on hardware. Self-test (`-DTRG_SELFTEST=1`) sent both ON (`EE`,`F2`) then both OFF (`EF`,`F3`); the bumper LEDs turned on then off, and the box's own state notifications confirmed the change (below). |
-| On-screen channel pills reflect **live** box state | ✅ Verified. The box streams `0xFFF7` notifications continuously (~200 ms). During the self-test the state byte tracked the commands exactly: `0x00 → 0x04 → 0x0C` (ch1+ch2 on) then `0x0C → 0x08 → 0x00` (off). The UI also pushes an optimistic echo for instant feedback before the next notification. |
+| On-screen D/P band reflects **live** box state | ✅ Firmware/protocol evidence in repo history and captures. Self-test sent passenger/APK Ch2 (`EE`) then driver/APK Ch3 (`F2`), and FFF7 state tracked `0x00 → 0x04 → 0x0C`; turning off tracked `0x0C → 0x08 → 0x00`. Therefore P reads bit `0x04` and D reads bit `0x08`. The D/P band must not use commanded/optimistic state. |
 
 > **Authentication matters.** The box silently ignores every command **and**
 > withholds its notification stream unless `TRIGGER_DEVICE_ID` (frame byte 2)

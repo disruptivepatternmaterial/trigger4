@@ -74,15 +74,15 @@ void trigger_proto_parse_state(const uint8_t *frame, size_t frame_len, trg_state
         out->valid = false;
         return;
     }
-    /* Expected shape: 6E 00 <state> <variant> 44.
+    /* Expected shape: 6E 00 <state> <variant> <device-id>.
      *
      * Captures from the real box have shown byte 3 is not a stable sentinel
-     * (for example 0x62 and 0x5D both appear), while byte 2 remains the state
-     * bitfield and byte 4 remains the device family marker. Do not reject the
-     * feedback frame solely because byte 3 varies; that makes the D/P feedback
-     * band go invalid or stale even though the channel bitfield is present.
+     * (for example 0x62, 0x5D, and 0x42 appear), while byte 2 remains the state
+     * bitfield and byte 4 is the observed device id (0x44 in bundled captures).
+     * This parser does not know the configured device id, so validate the
+     * stable FFF7 header and preserve byte 2 as raw_state for diagnostics.
      */
-    if (frame[0] != 0x6E || frame[1] != 0x00 || frame[4] != 0x44) {
+    if (frame[0] != 0x6E || frame[1] != 0x00) {
         out->valid = false;
         out->raw_state = (frame_len >= 3) ? frame[2] : 0;
         return;
@@ -90,10 +90,10 @@ void trigger_proto_parse_state(const uint8_t *frame, size_t frame_len, trg_state
     uint8_t s = frame[2];
     out->raw_state = s;
     out->valid     = true;
-    out->ch1_on    = (s & 0x04) != 0;  /* historical SW1 — APK Ch1 */
-    out->ch2_on    = (s & 0x08) != 0;  /* historical SW2 — APK Ch2 */
-    out->ch3_on    = (s & 0x10) != 0;
-    out->ch4_on    = (s & 0x20) != 0;
-    out->ch1_blink = (s & 0x40) != 0;
-    out->ch2_blink = (s & 0x80) != 0;
+    out->ch2_on    = (s & 0x04) != 0;  /* SW1: APK Ch2 / passenger */
+    out->ch3_on    = (s & 0x08) != 0;  /* SW2: APK Ch3 / driver    */
+    out->ch4_on    = (s & 0x10) != 0;  /* SW3: APK Ch4, inferred   */
+    out->ch1_on    = (s & 0x20) != 0;  /* SW4: APK Ch1, inferred   */
+    out->ch2_blink = (s & 0x40) != 0;  /* SW1 blink */
+    out->ch3_blink = (s & 0x80) != 0;  /* SW2 blink */
 }

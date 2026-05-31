@@ -344,10 +344,10 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event,
         trigger_proto_parse_state(p->notify.value, p->notify.value_len, &st);
         trigger_state_set_channels(&st);
         ESP_LOGI(TAG, "notify state=0x%02X valid=%d ch1=%d ch2=%d ch3=%d ch4=%d "
-                       "blink1=%d blink2=%d",
+                       "blink2=%d blink3=%d",
                  st.raw_state, st.valid,
                  st.ch1_on, st.ch2_on, st.ch3_on, st.ch4_on,
-                 st.ch1_blink, st.ch2_blink);
+                 st.ch2_blink, st.ch3_blink);
         break;
     }
 
