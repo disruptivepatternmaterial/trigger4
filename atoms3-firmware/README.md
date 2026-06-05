@@ -79,10 +79,10 @@ cp main/secrets.example.h main/secrets.h
 ```
 
 ```c
-#define TRIGGER_DEVICE_ID   0x44   /* byte 2 of every frame; factory default */
-#define TRIGGER_PASSWORD    1234   /* decimal PIN set in the official app     */
+#define TRIGGER_DEVICE_ID   <DEVICE_ID>  /* byte 2 of every frame */
+#define TRIGGER_PASSWORD    <PIN>        /* decimal PIN set in the official app */
 /* Optional, faster reconnect to one specific box:
-   #define TRIGGER_PIN_MAC  { 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF } */
+   #define TRIGGER_PIN_MAC  { <BLE_MAC_BYTES> } */
 ```
 
 ## Build & flash
@@ -128,7 +128,7 @@ observed, not what the code _should_ do.
 > configured with in the official app. If the Atom connects (`link is up`) but
 > nothing happens and you see no `notify state=` lines, your PIN is wrong.
 > Read the real bytes off the phone's keepalive in a sniff: `74 88 <id> 00 00
-> DE <pwd_hi> <pwd_lo>` — e.g. `…DE 04 D2` ⇒ password `0x04D2` = 1234.
+> DE <pwd_hi> <pwd_lo>`.
 
 ### Historical note (the bugs that made it "do nothing")
 

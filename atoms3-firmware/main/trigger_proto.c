@@ -78,7 +78,7 @@ void trigger_proto_parse_state(const uint8_t *frame, size_t frame_len, trg_state
      *
      * Captures from the real box have shown byte 3 is not a stable sentinel
      * (for example 0x62, 0x5D, and 0x42 appear), while byte 2 remains the state
-     * bitfield and byte 4 is the observed device id (0x44 in bundled captures).
+     * bitfield and byte 4 is the observed device id.
      * This parser does not know the configured device id, so validate the
      * stable FFF7 header and preserve byte 2 as raw_state for diagnostics.
      */

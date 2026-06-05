@@ -42,15 +42,14 @@ between APK hints and on-unit results (especially dimming).
 
 ```bash
 pip3 install --user bleak
-TRIGGER_PASSWORD=1234 \
-TRIGGER_DEVICE_ID=0x44 \
+TRIGGER_PASSWORD=<PIN> \
+TRIGGER_DEVICE_ID=<DEVICE_ID> \
 python3 test_trigger_from_mac.py sw1_on
 ```
 
 `TRIGGER_PASSWORD` is the decimal PIN you set in the official TRIGGER app.
-`TRIGGER_DEVICE_ID` is byte 2 of every command frame; if you don't know it
-yet, the factory default observed in captured units is `0x44` — it's almost
-certainly that. The script:
+`TRIGGER_DEVICE_ID` is byte 2 of every command frame; capture one command from
+your unit if you do not know it yet. The script:
 
 1. scans for the device by name (`Trigger 4 Plus`),
 2. opens a connection,
@@ -73,7 +72,7 @@ sw3_on  sw3_off  sw3_blink_on  sw3_blink_off    # APK Ch4 (F6–F9)
 sw4_on  sw4_off  sw4_blink_on  sw4_blink_off    # APK Ch1 (EA–ED); naming quirk — see action table
 both_on  both_off  both_blink_on  both_blink_off
 dim <level>          # UI brightness 0..255 (script sends wire byte 0xFF−level)
-raw  <hexbytes>      # arbitrary **8-byte** frame, e.g. `raw 748844210EEDE2425`
+raw  <hexbytes>      # arbitrary **8-byte** frame; replace ID/PIN bytes first
 ```
 
 ### Option B — ESPHome ESP32-C6 BLE bridge (Home Assistant)
@@ -176,7 +175,7 @@ All commands are written to `0xFFF6` (handle `0x0035`). On captured **Trigger
 |------|-------|---------|
 | 0 | `0x74` | fixed magic |
 | 1 | `0x88` | fixed magic |
-| 2 | device ID | the unit's "fourid" (any 0–255). Default observed: `0x44` |
+| 2 | device ID | the unit's "fourid" (any 0–255). Capture this from your unit. |
 | 3 | opcode | `0x21` = switch action; `0x2D` = dim; `0x2B` = dim-slider hint (see below) |
 | 4 | payload | action byte for `0x21`; **inverted dim** `0xFF − UI` for `0x2D` |
 | 5 | flag | `0xDE` for opcode `0x21` and **keepalive**; `0x00` for `0x2D` / `0x2B` |
@@ -184,8 +183,7 @@ All commands are written to `0xFFF6` (handle `0x0035`). On captured **Trigger
 | 7 | `password & 0xFF` | low byte of PIN |
 
 The PIN is the value you typed into the TRIGGER app's "Password" field,
-treated as a single 16-bit decimal integer. Example: PIN `1234` → bytes
-`0x04 0xD2`.
+treated as a single 16-bit decimal integer.
 
 #### 8-byte keepalive frame (REQUIRED)
 
@@ -277,8 +275,7 @@ sending `0x2B` first** — confirmed by Mac replay.
 
 After every write to `0xFFF6` the box notifies on `0xFFF7` with a 5-byte
 payload. Byte 2 is the state bitmap; byte 3 is a variant/status byte and has
-been observed as `0x62`, `0x5D`, and `0x42`; byte 4 is the observed device ID
-(`0x44` in bundled captures).
+been observed as `0x62`, `0x5D`, and `0x42`; byte 4 is the observed device ID.
 
 ```
 6E 00 <state_byte> <variant> <device_id>
@@ -306,13 +303,13 @@ Verified examples (PIN bytes redacted as `XX XX`):
 
 | Sequence | Notify | State byte breakdown |
 |----------|--------|----------------------|
-| `sw1` / passenger ON (`EE`) | `6e 00 04 62 44` | `0x04` = passenger |
-| `sw2` / driver ON (`F2`) | `6e 00 08 62 44` | `0x08` = driver |
-| passenger + driver ON | `6e 00 0c 62 44` | `0x0C` = passenger + driver |
-| passenger ON + passenger blink (`F0`) | `6e 00 44 62 44` | `0x44` = passenger + passenger-blink |
-| passenger + driver ON + passenger blink | `6e 00 4c 62 44` | `0x4C` = passenger + driver + passenger-blink |
-| driver ON + driver blink | `6e 00 88 62 44` | `0x88` = driver + driver-blink |
-| all off | `6e 00 00 62 44` | `0x00` |
+| `sw1` / passenger ON (`EE`) | `6e 00 04 62 <id>` | `0x04` = passenger |
+| `sw2` / driver ON (`F2`) | `6e 00 08 62 <id>` | `0x08` = driver |
+| passenger + driver ON | `6e 00 0c 62 <id>` | `0x0C` = passenger + driver |
+| passenger ON + passenger blink (`F0`) | `6e 00 44 62 <id>` | `0x44` = passenger + passenger-blink |
+| passenger + driver ON + passenger blink | `6e 00 4c 62 <id>` | `0x4C` = passenger + driver + passenger-blink |
+| driver ON + driver blink | `6e 00 88 62 <id>` | `0x88` = driver + driver-blink |
+| all off | `6e 00 00 62 <id>` | `0x00` |
 
 Evidence sources: `triggersniff_phone_v2.pcap`,
 `triggersniff_dim_blink.pcap`, `triggersniff_dim_blink_v2.pcap`, plus commit

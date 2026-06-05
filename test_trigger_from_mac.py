@@ -12,14 +12,14 @@ official phone app writes to. Verified against real hardware:
 
 See README.md for the full byte-level reference.
 
-Configure via environment variables (defaults shown):
-    TRIGGER_DEVICE_ID=0x44       # byte 2 of every frame
-    TRIGGER_PASSWORD=1234        # decimal PIN you set in the TRIGGER app
-    TRIGGER_NAME="Trigger 4 Plus"
+Configure via environment variables:
+    TRIGGER_DEVICE_ID=<DEVICE_ID>  # byte 2 of every frame
+    TRIGGER_PASSWORD=<PIN>         # decimal PIN you set in the TRIGGER app
+    TRIGGER_NAME="Trigger 4 Plus"  # optional; defaults to this name
 
 Usage:
     pip3 install --user bleak
-    TRIGGER_PASSWORD=1234 python3 test_trigger_from_mac.py sw1_on
+    TRIGGER_DEVICE_ID=<DEVICE_ID> TRIGGER_PASSWORD=<PIN> python3 test_trigger_from_mac.py sw1_on
     python3 test_trigger_from_mac.py sw1_off
     python3 test_trigger_from_mac.py sw2_on
     python3 test_trigger_from_mac.py sw2_off
@@ -32,7 +32,7 @@ Usage:
     python3 test_trigger_from_mac.py both_blink_on
     python3 test_trigger_from_mac.py both_blink_off
     python3 test_trigger_from_mac.py dim 0x80        # UI level 0..255 (bright..dim wire byte inverted)
-    python3 test_trigger_from_mac.py raw 748844210EEDE2425   # example 8-byte frame (replace PIN bytes)
+    python3 test_trigger_from_mac.py raw 7488<ID>21EEDE<HI><LO>   # replace placeholders first
 """
 import asyncio
 import os
@@ -45,9 +45,12 @@ TRIGGER_NAME = os.environ.get("TRIGGER_NAME", "Trigger 4 Plus")
 WRITE_UUID = "0000fff6-0000-1000-8000-00805f9b34fb"   # handle 0x0035
 NOTIFY_UUID = "0000fff7-0000-1000-8000-00805f9b34fb"  # handle 0x0038
 
-# int(x, 0) accepts both decimal ("1234") and hex ("0x44") in env vars.
-DEVICE_ID = int(os.environ.get("TRIGGER_DEVICE_ID", "0x44"), 0) & 0xFF
-PASSWORD  = int(os.environ.get("TRIGGER_PASSWORD",  "1234"), 0) & 0xFFFF
+# int(x, 0) accepts both decimal and hex env vars.
+try:
+    DEVICE_ID = int(os.environ["TRIGGER_DEVICE_ID"], 0) & 0xFF
+    PASSWORD  = int(os.environ["TRIGGER_PASSWORD"], 0) & 0xFFFF
+except KeyError as exc:
+    raise SystemExit(f"Set {exc.args[0]} for your relay before running this script.") from exc
 PWD_HI    = (PASSWORD >> 8) & 0xFF
 PWD_LO    =  PASSWORD       & 0xFF
 
@@ -164,7 +167,7 @@ def main():
     cmd = sys.argv[1].lower()
     if cmd == "raw":
         if len(sys.argv) < 3:
-            sys.exit("raw needs hex payload, e.g. raw 7488442100DE0000")
+            sys.exit("raw needs hex payload, e.g. raw 7488<ID>2100DE<HI><LO>")
         asyncio.run(run_payloads("raw", [bytes.fromhex(sys.argv[2])]))
     elif cmd == "dim":
         if len(sys.argv) < 3:

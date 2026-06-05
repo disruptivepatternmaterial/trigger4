@@ -10,8 +10,7 @@
  * runtime knobs the firmware needs:
  *
  *   TRIGGER_DEVICE_ID  — byte 2 of every command frame ("fourid").
- *                        Factory default observed across captured units
- *                        is 0x44; sniff your own unit if in doubt.
+ *                        Capture your own unit's value before use.
  *
  *   TRIGGER_PASSWORD   — the decimal PIN you set in the official TRIGGER
  *                        app, treated as a 16-bit unsigned integer. The
@@ -22,8 +21,8 @@
 #ifndef TRIGGER4P_SECRETS_H
 #define TRIGGER4P_SECRETS_H
 
-#define TRIGGER_DEVICE_ID   0x44
-#define TRIGGER_PASSWORD    1234
+#define TRIGGER_DEVICE_ID   0x00  /* replace with your unit's device ID */
+#define TRIGGER_PASSWORD    0     /* replace with your decimal PIN */
 
 /* Optional: pin the TRIGGER's BLE MAC for faster reconnects. Set to NULL
  * to use name-based discovery ("Trigger 4 Plus") on every connect.
